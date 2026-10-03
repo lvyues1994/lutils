@@ -1,0 +1,3 @@
+add_executable(erasure_counter counter.cpp)
+target_link_libraries(erasure_counter PRIVATE lutils::erasure lutils_development)
+set_target_properties(erasure_counter PROPERTIES CXX_EXTENSIONS OFF)

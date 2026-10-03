@@ -1,0 +1,28 @@
+if(COMPILER_ID STREQUAL "MSVC")
+    execute_process(COMMAND "${COMPILER}" /nologo /std:c++17 /EHsc
+        "/I${INCLUDE_DIR}" /c "${SOURCE}" "/Fo${OUTPUT}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+else()
+    execute_process(COMMAND "${COMPILER}" -std=c++17 -pedantic-errors
+        "-I${INCLUDE_DIR}" -fsyntax-only "${SOURCE}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+endif()
+if("${result}" STREQUAL "0")
+    message(FATAL_ERROR "${CASE}: compilation unexpectedly succeeded")
+endif()
+set(pattern "")
+if(CASE STREQUAL "cycle")
+    set(pattern "cyclic erasure interface extension")
+elseif(CASE STREQUAL "missing_member")
+    set(pattern "missingOperation")
+elseif(CASE STREQUAL "const_mutation")
+    set(pattern "setValue")
+elseif(CASE STREQUAL "copy_move_only")
+    set(pattern "deleted|deleted function|C2280")
+endif()
+if(NOT "${out}${err}" MATCHES "${pattern}")
+    message(FATAL_ERROR "${CASE}: unexpected failure:\n${out}${err}")
+endif()
+if("${out}${err}" MATCHES "internal compiler error|PLEASE submit a bug report")
+    message(FATAL_ERROR "${CASE}: compiler crashed:\n${out}${err}")
+endif()
