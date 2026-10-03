@@ -1,3 +1,12 @@
 add_executable(erasure_counter counter.cpp)
 target_link_libraries(erasure_counter PRIVATE lutils::erasure lutils_development)
 set_target_properties(erasure_counter PROPERTIES CXX_EXTENSIONS OFF)
+
+if(LUTILS_BUILD_KERNELC)
+    add_executable(image_compute image_compute.cpp)
+    target_link_libraries(image_compute PRIVATE lutils::image_ops lutils::compute_cpu lutils_development)
+    if(LUTILS_ENABLE_VULKAN)
+        target_link_libraries(image_compute PRIVATE lutils::compute_vulkan)
+        target_compile_definitions(image_compute PRIVATE LUTILS_EXAMPLE_VULKAN)
+    endif()
+endif()

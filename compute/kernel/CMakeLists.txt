@@ -1,0 +1,4 @@
+add_library(lutils_compute_kernel INTERFACE)
+add_library(lutils::compute_kernel ALIAS lutils_compute_kernel)
+target_include_directories(lutils_compute_kernel INTERFACE include)
+target_compile_features(lutils_compute_kernel INTERFACE cxx_std_17)

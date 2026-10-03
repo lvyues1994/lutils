@@ -19,6 +19,15 @@
     {"name": "debug", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
     {"name": "release", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
     {
+      "name": "compute-release",
+      "inherits": "release",
+      "cacheVariables": {
+        "LUTILS_BUILD_KERNELC": true,
+        "LUTILS_ENABLE_VULKAN": true,
+        "LUTILS_BUILD_BENCHMARKS": true
+      }
+    },
+    {
       "name": "clang-sanitize",
       "inherits": "debug",
       "cacheVariables": {"CMAKE_CXX_COMPILER": "clang++", "LUTILS_ENABLE_SANITIZERS": true}
@@ -27,11 +36,13 @@
   "buildPresets": [
     {"name": "debug", "configurePreset": "debug"},
     {"name": "release", "configurePreset": "release"},
+    {"name": "compute-release", "configurePreset": "compute-release"},
     {"name": "clang-sanitize", "configurePreset": "clang-sanitize"}
   ],
   "testPresets": [
     {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}},
     {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
+    {"name": "compute-release", "configurePreset": "compute-release", "output": {"outputOnFailure": true}},
     {"name": "clang-sanitize", "configurePreset": "clang-sanitize", "output": {"outputOnFailure": true}}
   ]
 }

@@ -1,0 +1,5 @@
+find_package(Vulkan REQUIRED)
+add_library(lutils_compute_vulkan STATIC Vulkan.cpp)
+add_library(lutils::compute_vulkan ALIAS lutils_compute_vulkan)
+target_include_directories(lutils_compute_vulkan PUBLIC include)
+target_link_libraries(lutils_compute_vulkan PUBLIC lutils::compute PRIVATE Vulkan::Vulkan lutils_development)
