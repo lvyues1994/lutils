@@ -2,7 +2,9 @@
 #include <cstdint>
 #include <lutils/Result.hpp>
 #include <lutils/compute/Kernel.hpp>
+#include <lutils/compute/Pixel.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -14,13 +16,30 @@ struct Extent3 {
     Word y = 1;
     Word z = 1;
 };
-enum class Access { Read, Write };
+enum class Access { Read, Write, ReadWrite };
+struct ImageDesc {
+    kernel::ImageFormat format = kernel::ImageFormat::R8UI;
+    std::uint32_t dimensions = 2;
+    Extent3 extent;
+};
+inline bool operator==(ImageDesc const &a, ImageDesc const &b) {
+    return a.format == b.format && a.dimensions == b.dimensions && a.extent.x == b.extent.x &&
+           a.extent.y == b.extent.y && a.extent.z == b.extent.z;
+}
+struct BindingInfo {
+    std::uint32_t slot = 0;
+    std::size_t elementWords = 1;
+    std::optional<ImageDesc> image;
+};
+Result<std::size_t> imageWordCount(ImageDesc const &desc);
 struct CpuBuffer {
     Word *data;
     std::size_t size;
+    std::optional<ImageDesc> image = {};
 };
 using CpuEntry = void (*)(kernel::Invocation, std::vector<CpuBuffer> const &,
                           std::vector<Word> const &);
+using CpuDispatch = void (*)(Extent3, std::vector<CpuBuffer> const &, std::vector<Word> const &);
 struct KernelSource {
     std::string name;
     std::vector<Access> bindings;
@@ -29,6 +48,8 @@ struct KernelSource {
     CpuEntry cpu = nullptr;
     std::vector<Word> spirv;
     Word abiVersion = 1;
+    std::vector<BindingInfo> resources;
+    CpuDispatch cpuDispatch = nullptr;
 };
 struct DeviceInfo {
     std::string name;
@@ -38,6 +59,7 @@ struct DeviceInfo {
 struct Buffer {
     virtual ~Buffer() = default;
     virtual std::size_t wordCount() const noexcept = 0;
+    virtual std::optional<ImageDesc> imageDescription() const { return {}; }
 };
 struct Kernel {
     virtual ~Kernel() = default;
@@ -100,6 +122,9 @@ struct Device {
     virtual ~Device() = default;
     virtual DeviceInfo info() const = 0;
     virtual Result<BufferHandle> createBuffer(std::size_t words) = 0;
+    virtual Result<BufferHandle> createImage(ImageDesc const &) {
+        return Error{ErrorCode::Unsupported, "device does not support images"};
+    }
     virtual Result<KernelHandle> createKernel(KernelSource source) = 0;
     virtual Result<void> upload(BufferHandle const &buffer, std::vector<Word> const &words) = 0;
     virtual Result<std::vector<Word>> download(BufferHandle const &buffer) = 0;

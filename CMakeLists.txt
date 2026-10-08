@@ -49,6 +49,10 @@ if(LUTILS_BUILD_KERNELC)
     add_subdirectory(image/ops)
 endif()
 
+if(LUTILS_BUILD_KERNELC AND (LUTILS_BUILD_TESTS OR LUTILS_BUILD_EXAMPLES))
+    add_subdirectory(examples/kernels)
+endif()
+
 if(LUTILS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

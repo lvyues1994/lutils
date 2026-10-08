@@ -40,7 +40,7 @@ if(LUTILS_BUILD_KERNELC)
     lutils_add_kernel(lutils_add_test_kernel NAME add SOURCE compute/add_kernel.cpp ENTRY lutils_test::add)
     lutils_add_kernel(lutils_grouped_test_kernel NAME grouped_add SOURCE compute/add_kernel.cpp ENTRY lutils_test::add LOCAL_SIZE_X 4)
     add_executable(compute_tests compute/integration.cpp)
-    target_link_libraries(compute_tests PRIVATE lutils::image_ops lutils::compute_cpu lutils_add_test_kernel lutils_grouped_test_kernel lutils_development)
+    target_link_libraries(compute_tests PRIVATE lutils::image_ops lutils::compute_cpu lutils_add_test_kernel lutils_grouped_test_kernel lutils_packed422_kernel lutils_development)
     add_test(NAME compute.cpu COMMAND compute_tests)
     add_executable(compute_async_tests compute/async.cpp)
     target_link_libraries(compute_async_tests PRIVATE lutils::image_ops lutils::compute_cpu lutils_add_test_kernel lutils_development)
@@ -87,4 +87,60 @@ if(LUTILS_BUILD_KERNELC)
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compute/add_kernel.cpp
         -DINCLUDE_DIR=${LUTILS_KERNEL_INCLUDE_DIR} -DWORK=${CMAKE_CURRENT_BINARY_DIR}/workgroup-check
         -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/workgroup_options.cmake)
+endif()
+
+if(LUTILS_BUILD_KERNELC)
+    add_executable(shader_tests compute/shader.cpp)
+    target_link_libraries(shader_tests PRIVATE lutils_typed_add lutils::compute_cpu lutils_development)
+    add_test(NAME shader.cpu COMMAND shader_tests)
+    if(LUTILS_ENABLE_VULKAN)
+        target_link_libraries(shader_tests PRIVATE lutils::compute_vulkan)
+        target_compile_definitions(shader_tests PRIVATE LUTILS_TEST_VULKAN)
+        add_test(NAME shader.vulkan COMMAND shader_tests vulkan)
+    endif()
+endif()
+
+if(LUTILS_BUILD_KERNELC)
+    target_link_libraries(shader_tests PRIVATE lutils_camera_rays)
+    target_link_libraries(shader_tests PRIVATE lutils_sphere_tracer)
+    target_link_libraries(shader_tests PRIVATE lutils_visualize_rays)
+    target_link_libraries(shader_tests PRIVATE lutils_game_of_life)
+    target_link_libraries(shader_tests PRIVATE lutils_volume)
+    target_link_libraries(shader_tests PRIVATE lutils_line)
+endif()
+
+if(LUTILS_BUILD_KERNELC)
+    lutils_add_shader(lutils_layout NAME layout SOURCE compute/layout_kernel.hpp ENTRY layout_test::Layout)
+    target_link_libraries(shader_tests PRIVATE lutils_layout)
+    set(image_formats
+        R8 RG8 RGBA8 R8Snorm RG8Snorm RGBA8Snorm R8UI RG8UI RGBA8UI R8I RG8I RGBA8I R16 RG16 RGBA16 R16Snorm RG16Snorm RGBA16Snorm R16UI RG16UI RGBA16UI R16I RG16I RGBA16I R32UI RG32UI RGBA32UI R32I RG32I RGBA32I R32F RG32F RGBA32F)
+    foreach(format IN LISTS image_formats)
+        lutils_add_shader(lutils_format_${format} NAME format_${format}
+            SOURCE compute/formats.hpp ENTRY format_test::Copy${format})
+        target_link_libraries(shader_tests PRIVATE lutils_format_${format})
+    endforeach()
+endif()
+
+add_executable(shader_value_tests compute/values.cpp)
+target_link_libraries(shader_value_tests PRIVATE lutils::compute_cpu lutils_development)
+add_test(NAME shader.values COMMAND shader_value_tests)
+if(LUTILS_BUILD_KERNELC)
+    set(shader_rejection_patterns "custom overloaded" "aggregates" "side effects" "positive bounded"
+        "dynamic allocation" "uniforms are read only" "builtins are read only" "arrays are read only"
+        "recursive shader" "duplicate buffer" "64-bit integer" "nested mutation" "receiver must be this" "reinterpret casts" "swizzle component count")
+    foreach(case RANGE 1 15)
+        math(EXPR index "${case} - 1")
+        list(GET shader_rejection_patterns ${index} pattern)
+        add_test(NAME shader.reject.${case} COMMAND ${CMAKE_COMMAND}
+            -DTOOL=$<TARGET_FILE:lutils-kernelc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compute/reject_shader.hpp
+            -DINCLUDE_DIR=${LUTILS_KERNEL_INCLUDE_DIR} -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/shader_rejected_${case}
+            -DCASE=${case} "-DPATTERN=${pattern}" -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/reject.cmake)
+    endforeach()
+endif()
+if(LUTILS_BUILD_KERNELC)
+    add_test(NAME shader.preprocessing_profile COMMAND ${CMAKE_COMMAND}
+        -DTOOL=$<TARGET_FILE:lutils-kernelc> -DROOT=${PROJECT_SOURCE_DIR}
+        -DTEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compute -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shader-profile-check
+        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/shader_profile.cmake)
 endif()

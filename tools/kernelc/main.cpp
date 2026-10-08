@@ -1,9 +1,12 @@
+#include <cctype>
 #include <clang/AST/ASTConsumer.h>
+#include <clang/AST/Attr.h>
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/Basic/MakeSupport.h>
 #include <clang/Basic/Version.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
+#include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Tooling/CommonOptionsParser.h>
 #include <clang/Tooling/Tooling.h>
 #include <filesystem>
@@ -27,6 +30,9 @@ llvm::cl::opt<std::string> entryName{"entry", llvm::cl::Required, llvm::cl::cat(
 llvm::cl::opt<std::string> outputBase{"output", llvm::cl::Required, llvm::cl::cat(category)};
 llvm::cl::opt<std::string> packageName{"name", llvm::cl::Required, llvm::cl::cat(category)};
 llvm::cl::opt<unsigned> localSizeX{"local-size-x", llvm::cl::init(1), llvm::cl::cat(category)};
+llvm::cl::opt<std::string> expectKind{"expect-kind", llvm::cl::init("auto"),
+                                      llvm::cl::cat(category)};
+std::vector<std::pair<std::string, bool>> preprocessingMacros;
 std::string inputPath;
 bool failed = false;
 
@@ -485,6 +491,7 @@ struct Compiler {
         return out.str();
     }
 };
+#include "StructCompiler.hpp"
 void write(std::string const &path, std::string const &text) {
     std::ofstream out{path};
     out << text;
@@ -494,6 +501,12 @@ void write(std::string const &path, std::string const &text) {
 struct Consumer final : ASTConsumer, RecursiveASTVisitor<Consumer> {
     ASTContext *context = nullptr;
     FunctionDecl const *entry = nullptr;
+    CXXRecordDecl const *structEntry = nullptr;
+    bool VisitCXXRecordDecl(CXXRecordDecl *decl) {
+        if (decl->isThisDeclarationADefinition() && decl->getQualifiedNameAsString() == entryName)
+            structEntry = decl;
+        return true;
+    }
     bool VisitFunctionDecl(FunctionDecl *decl) {
         if (decl->isThisDeclarationADefinition() && decl->getQualifiedNameAsString() == entryName) {
             if (entry)
@@ -510,6 +523,22 @@ struct Consumer final : ASTConsumer, RecursiveASTVisitor<Consumer> {
         try {
             context = &ctx;
             TraverseDecl(ctx.getTranslationUnitDecl());
+            if (structEntry && expectKind == "function")
+                throw std::runtime_error(
+                    "struct kernels require lutils_add_shader (expect-kind=object)");
+            if (entry && expectKind == "object")
+                throw std::runtime_error(
+                    "function kernels require lutils_add_kernel (expect-kind=function)");
+            if (structEntry) {
+                StructCompiler compiler{ctx, structEntry};
+                auto glsl = compiler.shader();
+                auto header = compiler.header();
+                auto wrapper = compiler.wrapper();
+                write(outputBase + ".comp", glsl);
+                write(outputBase + ".hpp", header);
+                write(outputBase + ".cpp", wrapper);
+                return;
+            }
             if (!entry)
                 throw std::runtime_error("entry not found: " + entryName.getValue());
             Compiler compiler{ctx, entry};
@@ -534,7 +563,8 @@ struct Action final : ASTFrontendAction {
         opts.IncludeSystemHeaders = false;
         return true;
     }
-    std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &, llvm::StringRef) override {
+    std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &ci, llvm::StringRef) override {
+        preprocessingMacros = ci.getPreprocessorOpts().Macros;
         return std::make_unique<Consumer>();
     }
 };
@@ -574,6 +604,8 @@ int main(int argc, char **argv) {
         }
         if (options->getSourcePathList().size() != 1)
             throw std::runtime_error("exactly one translation unit required");
+        if (expectKind != "auto" && expectKind != "function" && expectKind != "object")
+            throw std::runtime_error("expect-kind must be auto, function or object");
         if (!localSizeX)
             throw std::runtime_error("local-size-x must be positive");
         inputPath = options->getSourcePathList().front();

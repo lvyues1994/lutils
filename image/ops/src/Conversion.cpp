@@ -176,19 +176,22 @@ Result<ConversionPlan> ConversionPlan::prepare(compute::Device &device, FrameDes
                                "and midpoint output rows");
         if (std::uint64_t{source.height} + (std::uint64_t{source.height} + 1) / 2 > UINT32_MAX)
             return Error{ErrorCode::Overflow, "conversion dispatch height overflows"};
-        code = generated::packed422_to_nv12();
-        generated::packed422_to_nv12Params p{source.width,
-                                             source.height,
-                                             src.value().planes[0].strideWords,
-                                             dst.value().planes[0].strideWords,
-                                             dst.value().planes[1].offsetWords,
-                                             dst.value().planes[1].strideWords,
-                                             uyvy ? 8u : 0u,
-                                             uyvy ? 0u : 8u,
-                                             uyvy ? 16u : 24u};
-        plan.parameters_ = generated::pack_packed422_to_nv12(p);
+        code = compute::KernelTraits<kernels::Packed422ToNv12>::source();
+        kernels::Packed422Params p{source.width,
+                                   source.height,
+                                   src.value().planes[0].strideWords,
+                                   dst.value().planes[0].strideWords,
+                                   dst.value().planes[1].offsetWords,
+                                   dst.value().planes[1].strideWords,
+                                   uyvy ? 8u : 0u,
+                                   uyvy ? 0u : 8u,
+                                   uyvy ? 16u : 24u};
         plan.extent_ = {dst.value().planes[0].strideWords,
                         source.height + (source.height + 1u) / 2u, 1};
+        kernels::Packed422ToNv12 kernel;
+        kernel.parameters = p;
+        plan.parameters_ =
+            compute::KernelTraits<kernels::Packed422ToNv12>::pack(kernel, plan.extent_);
     } else if (source.format == nv12() && destination.format == rgba8()) {
         if (source.color.matrix != Matrix::Bt601 || source.color.range != Range::Limited ||
             source.color.horizontal == ChromaLocation::Unknown ||
@@ -199,22 +202,20 @@ Result<ConversionPlan> ConversionPlan::prepare(compute::Device &device, FrameDes
             destination.color.vertical != ChromaLocation::Unknown)
             return unsupported("NV12 to RGBA requires BT.601 limited, known horizontal/midpoint "
                                "vertical siting and full-range RGB output");
-        code = generated::nv12_to_rgba();
-        generated::nv12_to_rgbaParams p{source.width,
-                                        source.height,
-                                        src.value().planes[0].strideWords,
-                                        src.value().planes[1].offsetWords,
-                                        src.value().planes[1].strideWords,
-                                        dst.value().planes[0].strideWords};
-        plan.parameters_ = generated::pack_nv12_to_rgba(p);
+        code = compute::KernelTraits<kernels::Nv12ToRgba>::source();
+        kernels::RgbParams p{source.width,
+                             source.height,
+                             src.value().planes[0].strideWords,
+                             src.value().planes[1].offsetWords,
+                             src.value().planes[1].strideWords,
+                             dst.value().planes[0].strideWords};
         plan.extent_ = {source.width, source.height, 1};
+        kernels::Nv12ToRgba kernel;
+        kernel.parameters = p;
+        plan.parameters_ = compute::KernelTraits<kernels::Nv12ToRgba>::pack(kernel, plan.extent_);
     } else
         return unsupported("no kernel for this format conversion");
-    auto x = ((std::uint64_t{plan.extent_.x} + code.localSize.x - 1) / code.localSize.x) *
-             code.localSize.x;
-    if (x > UINT32_MAX)
-        return Error{ErrorCode::Overflow, "padded conversion dispatch width overflows"};
-    plan.extent_.x = static_cast<std::uint32_t>(x);
+
     auto kernel = device.createKernel(std::move(code));
     if (!kernel)
         return kernel.error();

@@ -9,8 +9,10 @@ struct CpuBufferImpl final : Buffer {
     CpuBufferImpl(std::shared_ptr<Identity> device, std::size_t count)
         : identity(std::move(device)), words(count) {}
     std::size_t wordCount() const noexcept override { return words.size(); }
+    std::optional<ImageDesc> imageDescription() const override { return image; }
     std::shared_ptr<Identity> identity;
     std::vector<Word> words;
+    std::optional<ImageDesc> image;
 };
 struct CpuKernelImpl final : Kernel {
     CpuKernelImpl(std::shared_ptr<Identity> device, KernelSource source)
@@ -45,9 +47,17 @@ struct CpuDeviceImpl final : Device {
         auto status = validate(source);
         if (!status)
             return status.error();
-        if (!source.cpu)
+        if (!source.cpu && !source.cpuDispatch)
             return Error{ErrorCode::Unsupported, "kernel has no CPU entry"};
         return KernelHandle{std::make_shared<CpuKernelImpl>(identity, std::move(source))};
+    }
+    Result<BufferHandle> createImage(ImageDesc const &desc) override {
+        auto count = imageWordCount(desc);
+        if (!count)
+            return count.error();
+        auto result = std::make_shared<CpuBufferImpl>(identity, count.value());
+        result->image = desc;
+        return BufferHandle{std::move(result)};
     }
     CpuBufferImpl *get(BufferHandle const &buffer) const {
         auto *result = dynamic_cast<CpuBufferImpl *>(buffer.get());
@@ -85,6 +95,15 @@ struct CpuDeviceImpl final : Device {
     void execute(Upload const &command, CpuCompletion &) {
         auto &words = get(command.buffer)->words;
         std::copy(command.words->begin(), command.words->end(), words.begin());
+        if (auto image = command.buffer->imageDescription()) {
+            auto bytes = kernel::formatInfo(image->format).bytes * image->extent.x *
+                         image->extent.y * image->extent.z;
+            if (bytes % sizeof(Word)) {
+                auto *tail = reinterpret_cast<unsigned char *>(words.data()) + bytes;
+                std::fill(tail, tail + (sizeof(Word) - bytes % sizeof(Word)),
+                          static_cast<unsigned char>(0));
+            }
+        }
     }
     void execute(Readback const &command, CpuCompletion &result) {
         result.results.emplace_back(
@@ -94,7 +113,11 @@ struct CpuDeviceImpl final : Device {
         std::vector<CpuBuffer> buffers;
         for (auto const &b : d.buffers) {
             auto &words = get(b)->words;
-            buffers.push_back({words.data(), words.size()});
+            buffers.push_back({words.data(), words.size(), b->imageDescription()});
+        }
+        if (d.kernel->source().cpuDispatch) {
+            d.kernel->source().cpuDispatch(d.extent, buffers, d.parameters);
+            return;
         }
         for (Word z = 0; z < d.extent.z; ++z)
             for (Word y = 0; y < d.extent.y; ++y)

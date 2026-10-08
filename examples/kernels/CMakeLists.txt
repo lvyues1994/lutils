@@ -1,0 +1,10 @@
+lutils_add_shader(lutils_typed_add NAME typed_add SOURCE pdf.hpp ENTRY test_pdf::FloatAdder)
+lutils_add_shader(lutils_camera_rays NAME camera_rays SOURCE pdf.hpp ENTRY test_pdf::CameraRays)
+lutils_add_shader(lutils_sphere_tracer NAME sphere_tracer SOURCE pdf.hpp ENTRY test_pdf::SphereTracer)
+lutils_add_shader(lutils_visualize_rays NAME visualize_rays SOURCE pdf.hpp ENTRY test_pdf::VisualizeRays)
+lutils_add_shader(lutils_game_of_life NAME game_of_life SOURCE pdf.hpp ENTRY test_pdf::GameOfLife)
+lutils_add_shader(lutils_volume NAME volume SOURCE pdf.hpp ENTRY test_pdf::Volume)
+lutils_add_shader(lutils_line NAME line SOURCE pdf.hpp ENTRY test_pdf::Line)
+add_library(lutils_pdf_kernels INTERFACE)
+target_link_libraries(lutils_pdf_kernels INTERFACE lutils_typed_add lutils_camera_rays
+    lutils_sphere_tracer lutils_visualize_rays lutils_game_of_life lutils_volume lutils_line)

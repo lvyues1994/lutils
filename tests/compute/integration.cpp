@@ -5,6 +5,7 @@
 #include <grouped_add.hpp>
 #include <iostream>
 #include <lutils/image/Conversion.hpp>
+#include <packed422_to_nv12.hpp>
 #include <string>
 #ifdef LUTILS_TEST_VULKAN
 #include <lutils/compute/Vulkan.hpp>
@@ -180,8 +181,15 @@ void largeInvocationIndex(co::Device &device) {
     ok(plan.record(commands, source, target));
     auto const &dispatch = std::get<co::Dispatch>(commands.commands().front());
     co::Word input = 0, output = 99;
-    dispatch.kernel->source().cpu({0x40000000u, 0, 0}, {{&input, 1}, {&output, 1}},
-                                  dispatch.parameters);
+    CHECK(dispatch.kernel->source().abiVersion == 2);
+    im::kernels::Packed422ToNv12 kernel;
+    kernel.parameters =
+        co::StorageCodec<im::kernels::Packed422Params>::read(dispatch.parameters.data() + 4);
+    kernel.source.cpuView(&input, 1);
+    kernel.destination.cpuView(&output, 1);
+    co::BuiltinScope scope;
+    co::kernel::gl_GlobalInvocationID = {0x40000000u, 0u, 0u};
+    kernel.main();
     CHECK(output == 99);
 }
 void conversions(co::Device &device, std::uint32_t width, std::uint32_t height, bool uyvy) {

@@ -56,7 +56,7 @@ function(lutils_check_kernel_profile target)
     endwhile()
 endfunction()
 
-function(lutils_add_kernel target)
+function(_lutils_add_kernel_impl target kind)
     if(CMAKE_CONFIGURATION_TYPES)
         message(FATAL_ERROR "Kernel generation currently requires a single-configuration generator such as Ninja")
     endif()
@@ -66,6 +66,9 @@ function(lutils_add_kernel target)
     endif()
     if(NOT K_NAME OR NOT K_SOURCE OR NOT K_ENTRY)
         message(FATAL_ERROR "lutils_add_kernel requires NAME SOURCE ENTRY")
+    endif()
+    if(kind STREQUAL "object" AND DEFINED K_LOCAL_SIZE_X)
+        message(FATAL_ERROR "lutils_add_shader takes local_size from the C++ kernel declaration")
     endif()
     if(NOT DEFINED K_LOCAL_SIZE_X)
         set(K_LOCAL_SIZE_X 1)
@@ -97,7 +100,7 @@ function(lutils_add_kernel target)
     add_custom_command(OUTPUT "${base}.hpp" "${base}.cpp" "${base}.comp" "${base}.spv" "${base}.spv.hpp"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
         COMMAND lutils-kernelc "${source}" --entry=${K_ENTRY} --name=${K_NAME} --output=${base}
-            --local-size-x=${K_LOCAL_SIZE_X}
+            --local-size-x=${K_LOCAL_SIZE_X} --expect-kind=${kind}
             -- -std=c++17 -Werror=macro-redefined "-I${sdk_include}"
             "$<$<BOOL:${includes}>:-I$<JOIN:${includes},;-I>>"
             "$<$<BOOL:${definitions}>:-D$<JOIN:${definitions},;-D>>"
@@ -112,6 +115,22 @@ function(lutils_add_kernel target)
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated" PRIVATE ${include_dirs})
     target_compile_definitions(${target} PRIVATE ${K_DEFINITIONS})
     target_link_libraries(${target} PUBLIC lutils::compute PRIVATE lutils_development)
+    if(kind STREQUAL "object")
+        # The source declares a public C++ type. Share exactly the preprocessing
+        # profile used by kernelc, including later target/dependency additions.
+        target_include_directories(${target} INTERFACE "${includes}")
+        target_compile_definitions(${target} INTERFACE "${definitions}")
+        target_compile_options(${target} INTERFACE ${global_macros}
+            "$<FILTER:${options},INCLUDE,^-D.|^-U.>")
+    endif()
     set_target_properties(${target} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     cmake_language(EVAL CODE "cmake_language(DEFER CALL lutils_check_kernel_profile [[${target}]])")
+endfunction()
+
+function(lutils_add_kernel target)
+    _lutils_add_kernel_impl(${target} function ${ARGN})
+endfunction()
+
+function(lutils_add_shader target)
+    _lutils_add_kernel_impl(${target} object ${ARGN})
 endfunction()

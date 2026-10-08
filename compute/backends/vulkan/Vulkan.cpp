@@ -192,6 +192,13 @@ struct DeviceState {
         auto d = structure<VkDeviceCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
         d.queueCreateInfoCount = 1;
         d.pQueueCreateInfos = &q;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(physical, &features);
+        VkPhysicalDeviceFeatures enabledFeatures{};
+        enabledFeatures.shaderStorageImageExtendedFormats =
+            features.shaderStorageImageExtendedFormats;
+        enabledFeatures.shaderFloat64 = features.shaderFloat64;
+        d.pEnabledFeatures = &enabledFeatures;
         check(vkCreateDevice(physical, &d, nullptr, &device), "vkCreateDevice");
         vkGetDeviceQueue(device, family, 0, &queue);
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
@@ -289,6 +296,100 @@ struct VulkanBuffer final : Buffer {
               "vkInvalidateMappedMemoryRanges");
     }
 };
+VkFormat imageFormat(kernel::ImageFormat format) {
+    switch (format) {
+#define LUTILS_VK_FORMAT(N, G, T, K, C, V)                                                         \
+    case kernel::ImageFormat::N:                                                                   \
+        return VK_FORMAT_##V;
+        LUTILS_IMAGE_FORMATS(LUTILS_VK_FORMAT)
+#undef LUTILS_VK_FORMAT
+    }
+    throw Failure{"unknown image format"};
+}
+struct VulkanImage final : Buffer {
+    std::shared_ptr<DeviceState> state;
+    ImageDesc desc;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    std::size_t words;
+    bool initialized = false;
+    VulkanImage(std::shared_ptr<DeviceState> s, ImageDesc d, std::size_t count)
+        : state(std::move(s)), desc(d), words(count) {}
+    ~VulkanImage() override {
+        if (view)
+            vkDestroyImageView(state->device, view, nullptr);
+        if (image)
+            vkDestroyImage(state->device, image, nullptr);
+        if (memory)
+            vkFreeMemory(state->device, memory, nullptr);
+    }
+    std::size_t wordCount() const noexcept override { return words; }
+    std::optional<ImageDesc> imageDescription() const override { return desc; }
+    void initialize() {
+        auto format = imageFormat(desc.format);
+        auto type = desc.dimensions == 1   ? VK_IMAGE_TYPE_1D
+                    : desc.dimensions == 2 ? VK_IMAGE_TYPE_2D
+                                           : VK_IMAGE_TYPE_3D;
+        auto viewType = desc.dimensions == 1   ? VK_IMAGE_VIEW_TYPE_1D
+                        : desc.dimensions == 2 ? VK_IMAGE_VIEW_TYPE_2D
+                                               : VK_IMAGE_VIEW_TYPE_3D;
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(state->physical, format, &properties);
+        constexpr VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+                                                VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                                                VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        if ((properties.optimalTilingFeatures & needed) != needed)
+            throw Failure{
+                "device does not support storage/transfer for the requested image format"};
+        auto create = structure<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+        create.imageType = type;
+        create.format = format;
+        create.extent = {desc.extent.x, desc.extent.y, desc.extent.z};
+        create.mipLevels = 1;
+        create.arrayLayers = 1;
+        create.samples = VK_SAMPLE_COUNT_1_BIT;
+        create.tiling = VK_IMAGE_TILING_OPTIMAL;
+        create.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageFormatProperties limits{};
+        check(vkGetPhysicalDeviceImageFormatProperties(state->physical, format, type, create.tiling,
+                                                       create.usage, 0, &limits),
+              "image format support");
+        if (desc.extent.x > limits.maxExtent.width || desc.extent.y > limits.maxExtent.height ||
+            desc.extent.z > limits.maxExtent.depth)
+            throw Failure{"image exceeds device dimensions"};
+        check(vkCreateImage(state->device, &create, nullptr, &image), "create image");
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(state->device, image, &req);
+        auto alloc = structure<VkMemoryAllocateInfo>(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+        alloc.allocationSize = req.size;
+        alloc.memoryTypeIndex = state->memory.memoryTypeCount;
+        for (std::uint32_t i = 0; i < state->memory.memoryTypeCount; ++i)
+            if ((req.memoryTypeBits & (1u << i)) && (state->memory.memoryTypes[i].propertyFlags &
+                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                alloc.memoryTypeIndex = i;
+                break;
+            }
+        if (alloc.memoryTypeIndex == state->memory.memoryTypeCount)
+            throw Failure{"image has no device-local memory"};
+        check(vkAllocateMemory(state->device, &alloc, nullptr, &memory), "allocate image memory");
+        check(vkBindImageMemory(state->device, image, memory, 0), "bind image memory");
+        auto info = structure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+        info.image = image;
+        info.viewType = viewType;
+        info.format = format;
+        info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        check(vkCreateImageView(state->device, &info, nullptr, &view), "create image view");
+    }
+};
+VkDescriptorType bindingType(KernelSource const &source, std::size_t i) {
+    return !source.resources.empty() && source.resources[i].image
+               ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+}
 struct VulkanKernel final : Kernel {
     std::shared_ptr<DeviceState> state;
     KernelSource description;
@@ -321,7 +422,7 @@ struct VulkanKernel final : Kernel {
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         for (std::uint32_t i = 0; i < description.bindings.size(); ++i)
             bindings.push_back(
-                {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+                {i, bindingType(description, i), 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
         auto set = structure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         set.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -416,13 +517,14 @@ struct SubmissionSlot {
             descriptorPool = VK_NULL_HANDLE;
             setCapacity = std::max(setCapacity, sets);
             descriptorCapacity = std::max(descriptorCapacity, descriptors);
-            VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                      static_cast<std::uint32_t>(descriptorCapacity)};
+            VkDescriptorPoolSize sizes[] = {
+                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<std::uint32_t>(descriptorCapacity)},
+                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, static_cast<std::uint32_t>(descriptorCapacity)}};
             auto create = structure<VkDescriptorPoolCreateInfo>(
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
             create.maxSets = static_cast<std::uint32_t>(setCapacity);
-            create.poolSizeCount = 1;
-            create.pPoolSizes = &size;
+            create.poolSizeCount = 2;
+            create.pPoolSizes = sizes;
             check(vkCreateDescriptorPool(state->device, &create, nullptr, &descriptorPool),
                   "create descriptor pool");
             if (state->options.statistics)
@@ -595,14 +697,40 @@ struct CommandRecorder {
     std::size_t uploadIndex = 0;
     std::size_t readbackIndex = 0;
     void initialize(BufferHandle const &handle) {
-        auto &buffer = *static_cast<VulkanBuffer *>(handle.get());
-        if (!buffer.initialized &&
-            std::find(submission.initialized.begin(), submission.initialized.end(), handle) ==
-                submission.initialized.end()) {
-            submission.initialized.push_back(handle);
-            vkCmdFillBuffer(submission.slot->command, buffer.buffer, 0,
-                            std::max<std::size_t>(1, buffer.words) * sizeof(Word), 0);
+        auto *buffer = dynamic_cast<VulkanBuffer *>(handle.get());
+        auto *image = dynamic_cast<VulkanImage *>(handle.get());
+        auto initialized = buffer ? buffer->initialized : image->initialized;
+        if (initialized || std::find(submission.initialized.begin(), submission.initialized.end(),
+                                     handle) != submission.initialized.end())
+            return;
+        submission.initialized.push_back(handle);
+        auto command = submission.slot->command;
+        if (buffer) {
+            vkCmdFillBuffer(command, buffer->buffer, 0,
+                            std::max<std::size_t>(1, buffer->words) * sizeof(Word), 0);
+        } else {
+            auto transition =
+                structure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+            transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            transition.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            transition.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            transition.image = image->image;
+            transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                 &transition);
+            VkClearColorValue clear{};
+            vkCmdClearColorImage(command, image->image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1,
+                                 &transition.subresourceRange);
         }
+    }
+    VkBufferImageCopy imageRegion(VulkanImage const &image) {
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {image.desc.extent.x, image.desc.extent.y, image.desc.extent.z};
+        return region;
     }
     void initialize(Upload const &c) { initialize(c.buffer); }
     void initialize(Readback const &c) { initialize(c.buffer); }
@@ -617,8 +745,14 @@ struct CommandRecorder {
             std::memcpy(staging.mapped, c.words->data(), c.words->size() * sizeof(Word));
             staging.flush();
             VkBufferCopy region{0, 0, c.words->size() * sizeof(Word)};
-            auto const &destination = *static_cast<VulkanBuffer *>(c.buffer.get());
-            vkCmdCopyBuffer(slot.command, staging.buffer, destination.buffer, 1, &region);
+            if (auto const *image = dynamic_cast<VulkanImage *>(c.buffer.get())) {
+                auto copy = imageRegion(*image);
+                vkCmdCopyBufferToImage(slot.command, staging.buffer, image->image,
+                                       VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+            } else {
+                auto const &destination = *static_cast<VulkanBuffer *>(c.buffer.get());
+                vkCmdCopyBuffer(slot.command, staging.buffer, destination.buffer, 1, &region);
+            }
         }
     }
     void operator()(Readback const &c) {
@@ -627,8 +761,18 @@ struct CommandRecorder {
         auto &staging = slot.staging(BufferKind::Readback, readbackIndex++, count);
         if (count) {
             VkBufferCopy region{0, 0, count * sizeof(Word)};
-            auto const &source = *static_cast<VulkanBuffer *>(c.buffer.get());
-            vkCmdCopyBuffer(slot.command, source.buffer, staging.buffer, 1, &region);
+            if (auto const *image = dynamic_cast<VulkanImage *>(c.buffer.get())) {
+                // Image transfers leave the final partial word untouched; keep padding
+                // deterministic.
+                vkCmdFillBuffer(slot.command, staging.buffer, 0, VK_WHOLE_SIZE, 0);
+                orderedBarrier(slot.command);
+                auto copy = imageRegion(*image);
+                vkCmdCopyImageToBuffer(slot.command, image->image, VK_IMAGE_LAYOUT_GENERAL,
+                                       staging.buffer, 1, &copy);
+            } else {
+                auto const &source = *static_cast<VulkanBuffer *>(c.buffer.get());
+                vkCmdCopyBuffer(slot.command, source.buffer, staging.buffer, 1, &region);
+            }
         }
     }
     void operator()(Dispatch const &d) {
@@ -644,20 +788,24 @@ struct CommandRecorder {
         VkDescriptorSet set = VK_NULL_HANDLE;
         check(vkAllocateDescriptorSets(slot.state->device, &alloc, &set),
               "allocate descriptor set");
-        std::vector<VkDescriptorBufferInfo> infos;
-        for (auto const &b : d.buffers) {
-            auto const &buffer = *static_cast<VulkanBuffer *>(b.get());
-            infos.push_back(
-                {buffer.buffer, 0, std::max<std::size_t>(1, buffer.words) * sizeof(Word)});
-        }
+        std::vector<VkDescriptorBufferInfo> infos(d.buffers.size());
+        std::vector<VkDescriptorImageInfo> images(d.buffers.size());
         std::vector<VkWriteDescriptorSet> updates;
-        for (std::uint32_t i = 0; i < infos.size(); ++i) {
+        for (std::uint32_t i = 0; i < d.buffers.size(); ++i) {
             auto update = structure<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
             update.dstSet = set;
             update.dstBinding = i;
             update.descriptorCount = 1;
-            update.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            update.pBufferInfo = &infos[i];
+            update.descriptorType = bindingType(k.description, i);
+            if (auto const *image = dynamic_cast<VulkanImage *>(d.buffers[i].get())) {
+                images[i] = {VK_NULL_HANDLE, image->view, VK_IMAGE_LAYOUT_GENERAL};
+                update.pImageInfo = &images[i];
+            } else {
+                auto const &buffer = *static_cast<VulkanBuffer *>(d.buffers[i].get());
+                infos[i] = {buffer.buffer, 0,
+                            std::max<std::size_t>(1, buffer.words) * sizeof(Word)};
+                update.pBufferInfo = &infos[i];
+            }
             updates.push_back(update);
         }
         vkUpdateDescriptorSets(slot.state->device, static_cast<std::uint32_t>(updates.size()),
@@ -670,8 +818,9 @@ struct CommandRecorder {
                                static_cast<std::uint32_t>(d.parameters.size() * sizeof(Word)),
                                d.parameters.data());
         auto local = k.description.localSize;
-        vkCmdDispatch(slot.command, d.extent.x / local.x, d.extent.y / local.y,
-                      d.extent.z / local.z);
+        vkCmdDispatch(slot.command, (d.extent.x / local.x + (d.extent.x % local.x != 0)),
+                      (d.extent.y / local.y + (d.extent.y % local.y != 0)),
+                      (d.extent.z / local.z + (d.extent.z % local.z != 0)));
     }
 };
 void record(Submission &submission) {
@@ -719,8 +868,12 @@ void record(Submission &submission) {
     submit.pCommandBuffers = &slot.command;
     check(vkQueueSubmit(slot.state->queue, 1, &submit, slot.fence), "submit queue");
     slot.submitted = true;
-    for (auto const &buffer : submission.initialized)
-        static_cast<VulkanBuffer *>(buffer.get())->initialized = true;
+    for (auto const &resource : submission.initialized) {
+        if (auto *image = dynamic_cast<VulkanImage *>(resource.get()))
+            image->initialized = true;
+        else
+            static_cast<VulkanBuffer *>(resource.get())->initialized = true;
+    }
 }
 struct VulkanDevice final : Device {
     std::shared_ptr<DeviceState> state;
@@ -744,9 +897,23 @@ struct VulkanDevice final : Device {
                 state->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU,
                 state->properties.limits.maxStorageBufferRange};
     }
-    VulkanBuffer *get(BufferHandle const &buffer) const {
-        auto *result = dynamic_cast<VulkanBuffer *>(buffer.get());
-        return result && result->state == state ? result : nullptr;
+    bool get(BufferHandle const &buffer) const {
+        if (auto const *image = dynamic_cast<VulkanImage *>(buffer.get()))
+            return image->state == state;
+        auto const *result = dynamic_cast<VulkanBuffer *>(buffer.get());
+        return result && result->state == state;
+    }
+    Result<BufferHandle> createImage(ImageDesc const &desc) override {
+        auto count = imageWordCount(desc);
+        if (!count)
+            return count.error();
+        try {
+            auto image = std::make_shared<VulkanImage>(state, desc, count.value());
+            image->initialize();
+            return BufferHandle{std::move(image)};
+        } catch (Failure const &e) {
+            return deviceError(e);
+        }
     }
     Result<BufferHandle> createBuffer(std::size_t words) override {
         if (words > state->properties.limits.maxStorageBufferRange / sizeof(Word) ||
@@ -770,12 +937,30 @@ struct VulkanDevice final : Device {
                          "module must use SPIR-V <= 1.3 and LocalSize matching "
                          "kernel metadata"};
         auto local = source.localSize;
+        std::size_t images = 0;
+        for (auto const &r : source.resources)
+            images += r.image.has_value();
+        auto buffers = source.bindings.size() - images;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(state->physical, &features);
+        for (std::size_t i = 5; i < source.spirv.size(); i += source.spirv[i] >> 16) {
+            if ((source.spirv[i] & 0xffffu) == 17u && (source.spirv[i] >> 16) == 2u) {
+                if (source.spirv[i + 1] == 10u && !features.shaderFloat64)
+                    return Error{ErrorCode::Unsupported, "device does not support Float64"};
+                if (source.spirv[i + 1] == 49u && !features.shaderStorageImageExtendedFormats)
+                    return Error{ErrorCode::Unsupported,
+                                 "device does not support extended storage image formats"};
+            }
+        }
         if (local.x > limits.maxComputeWorkGroupSize[0] ||
             local.y > limits.maxComputeWorkGroupSize[1] ||
             local.z > limits.maxComputeWorkGroupSize[2] ||
             std::uint64_t{local.x} * local.y * local.z > limits.maxComputeWorkGroupInvocations ||
-            source.bindings.size() > limits.maxPerStageDescriptorStorageBuffers ||
-            source.bindings.size() > limits.maxDescriptorSetStorageBuffers ||
+            buffers > limits.maxPerStageDescriptorStorageBuffers ||
+            buffers > limits.maxDescriptorSetStorageBuffers ||
+            images > limits.maxPerStageDescriptorStorageImages ||
+            images > limits.maxDescriptorSetStorageImages ||
+            source.bindings.size() > limits.maxPerStageResources ||
             source.parameterWords * 4 > limits.maxPushConstantsSize)
             return Error{ErrorCode::Unsupported, "kernel exceeds Vulkan device limits"};
         try {
@@ -831,8 +1016,9 @@ struct VulkanDevice final : Device {
                 return Error{ErrorCode::InvalidArgument, "foreign buffer"};
         auto local = k->description.localSize;
         auto const *limits = state->properties.limits.maxComputeWorkGroupCount;
-        if (d.extent.x / local.x > limits[0] || d.extent.y / local.y > limits[1] ||
-            d.extent.z / local.z > limits[2])
+        if ((d.extent.x / local.x + (d.extent.x % local.x != 0)) > limits[0] ||
+            (d.extent.y / local.y + (d.extent.y % local.y != 0)) > limits[1] ||
+            (d.extent.z / local.z + (d.extent.z % local.z != 0)) > limits[2])
             return Error{ErrorCode::Unsupported, "dispatch exceeds device workgroup count"};
         return {};
     }

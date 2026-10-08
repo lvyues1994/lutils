@@ -76,7 +76,9 @@ target_link_libraries(your_target PRIVATE lutils::erasure)
 
 ## 图像与计算
 
-架构和执行契约见 [计算模块设计](docs/compute-design.md)。
+架构和执行契约见 [计算模块设计](docs/compute-design.md)，类内核 API 与功能验收见
+[PDF 功能对齐](docs/pdf-parity.md)。内核使用 `struct + BufferBinding/ImageBinding/Uniform + main()`，
+C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考执行。
 
 | 目标 | 内容 |
 | --- | --- |
@@ -99,6 +101,8 @@ cmake --build build/compute
 ctest --test-dir build/compute --output-on-failure
 ./build/compute/examples/image_compute cpu 642 481
 ./build/compute/examples/image_compute vulkan 642 481
+./build/compute/examples/pdf_compute cpu
+./build/compute/examples/pdf_compute gpu output.ppm
 ```
 
 非标准依赖路径可通过 `LLVM_DIR`、`LUTILS_CLANG_INCLUDE_DIR`、
@@ -111,6 +115,14 @@ NV12 和 RGBA8 转换，再下载最终结果。当前转换支持逐行扫描�
 - YUYV422 / UYVY422 → NV12：偶宽，允许奇高，UV 垂直两行平均并按最近整数舍入，末行复制。输入水平位置已知、垂直位置 cosited，输出垂直位置 midpoint。
 - NV12 → RGBA8：BT.601 limited，输入水平位置已知、垂直位置 midpoint；色度按所在 2×2 块重建，输出 full-range RGB、alpha 255，输出色度位置设为 Unknown。
 - 色域与传递函数保留；算子所需信息未知或请求不受支持时返回错误。
+
+### 类内核示例
+
+[内核源码](examples/kernels/pdf.hpp) 包含浮点加法、三阶段球体光线追踪、Game of Life，
+以及一维和三维图像算子。[主机程序](examples/pdf_compute.cpp) 展示上传、attach、execute、
+多个阶段录入同一 CommandList、回读及 ping-pong。
+用 `lutils_add_shader(target NAME ... SOURCE ... ENTRY ...)` 构建类内核；`fileLocation` 与 NAME 一致，
+工作组大小在内核的 `local_size` 中声明。绑定直接使用 `A[i]`、`imageLoad`、`imageStore`。
 
 ### UYVY raw 文件测试
 

@@ -3,11 +3,12 @@
 ## 范围与模块
 
 Linux 首发，公共 C++17 API 为 Windows 保留可移植的数据与生命周期契约。
-构建期使用 Clang 18 AST 将受限 C++17 内核转为带类型的中间表示，再生成 GLSL；
+构建期使用 Clang 18 AST 校验受限 C++17 内核，提取类型、布局与资源信息，再生成 GLSL；
 glslang 生成 Vulkan 1.1 SPIR-V，SPIR-V Tools 校验。运行库不链接 Clang。
 CPU 包装和 Shader 由同一次构建生成，原算法仅维护一份 C++。
-CPU 包装为独立编译单元，公共生成头只包含声明和参数值类型。语义宏通过
-lutils_add_kernel 的 DEFINITIONS 同时传给两条构建路径；目录/目标定义、配置宏（包括
+CPU 包装为独立编译单元。类内核的公共生成头包含原始内核头和 KernelTraits；
+lutils_add_shader 将预处理配置传给两条编译路径及调用方。旧函数接口 lutils_add_kernel
+的生成头仍只包含声明与参数值类型。目录/目标定义、配置宏（包括
 Release 的 NDEBUG）及常规 -D/-U 按编译顺序同步。语言条件表达式、强制包含等无法
 可靠同步的设置报配置错误。内核禁止用编译器/平台内建宏改变语义。
 初版内核生成使用单配置生成器。Clang depfile 记录传递包含关系。
@@ -16,9 +17,9 @@ Release 的 NDEBUG）及常规 -D/-U 按编译顺序同步。语言条件表达�
 | 模块 | 职责 | 依赖 |
 | --- | --- | --- |
 | image | 固定块线性格式、颜色描述、平面视图、布局验证、HostFrame | core 的 Result |
-| compute/kernel | Invocation、只读/只写 word buffer 及 CPU 语义 | C++17 标准库 |
-| tools/kernelc | AST 校验、类型明确的 IR、GLSL 与 CPU 包装生成 | Clang/LLVM，仅构建期 |
-| compute/runtime | KernelSource、Buffer、Kernel、CommandList、Device、Completion | core、kernel |
+| compute/kernel | 向量、Pixel、BufferBinding、ImageBinding、Uniform、内建值 | C++17 标准库 |
+| tools/kernelc | AST 校验、std430 布局、GLSL 与 CPU 包装生成 | Clang/LLVM，仅构建期 |
+| compute/runtime | 类型化 Backend、主机资源、codec、命令与设备接口 | core、kernel |
 | compute/backends | CPU 参考执行和 Vulkan 单计算队列 | runtime，Vulkan 后端私有依赖 loader |
 | image/ops | 转换计划、设备帧、打包传输和图像内核 | image、runtime、生成内核 |
 
@@ -44,25 +45,19 @@ HostFrame 拥有内存，view() 即时生成借用关系；视图不可超出所
 
 ## 内核与编译器契约
 
-入口是构建配置指定的普通函数，参数依次为 Invocation、一个或多个 ReadBuffer/WriteBuffer、
-最后一个扁平参数结构。buffer 元素为 uint32 word；参数字段限 int32/uint32/float，最多 128 字节。
-包装代码逐字段打包，不复制主机结构体 ABI。资源顺序决定 binding；读写权限进入 Shader 声明。
+主入口是带 `LUTILS_KERNEL` 标记的聚合结构体，直接在 `main()` 中通过成员 binding 读写资源。
+类型、资源、格式、数组、Uniform、支持语法与构建方式见 [PDF 功能对齐](pdf-parity.md)。
+类内核使用 ABI v2：资源描述包含逻辑 slot、元素 stride 或图像格式/维度；工作组支持三维。
+前 16 字节参数保存实际执行范围，入口自动跳过补齐的工作项。Vulkan 校验 SPIR-V LocalSize
+和主机元数据一致，并检查设备能力。原有图像转换已迁移到这个入口。
 
-第一版目标子集：标量、局部变量、分支、循环、静态可解析的标量辅助函数、显式转换。
-工作组 X 在构建时由 LOCAL_SIZE_X 指定，缺省为 1，Y/Z 固定为 1。
-kernelc 同时生成 GLSL LocalSize 和主机元数据；Vulkan 拒绝两者不一致及超出设备能力的包。
-dispatch extent 表示实际工作项总量，各维度必须整除工作组大小。
-图像算子默认 X=32，向上补齐网格并检查溢出，内核用真实尺寸拒绝尾部工作项。
-CPU 执行相同补齐网格；当前没有组内同步语义。
-Params 禁止默认成员初始化、union、const/volatile 字段；修改表达式只允许在独立语句或 for 递增处。
-SDK 的资源方法按声明身份识别为内建操作，校验不进入其 CPU 实现。
-对辅助函数递归校验并拒绝调用环；未知 AST 节点默认报错，诊断保留源码位置。
-暂不提供任意指针、动态对象、异常、虚调用、STL、原子、共享内存和线程屏障。
-向量、数组、用户模板的扩展以新的正反测试为前提。
+旧普通函数入口保留 ABI v1，仍使用 Invocation、ReadBuffer/WriteBuffer 和扁平 Params。
+它的 X 工作组大小由 LOCAL_SIZE_X 指定，Y/Z=1，调用范围必须整除工作组；独立 CPU 包装
+保留原来的宏隔离行为。两种入口都拒绝未知 AST 节点，错误带源码位置。
 
 整数算法需避免 signed overflow、负数右移、非法移位和除零。
 浮点不保证跨 CPU/GPU 位级一致；每个算法单独声明误差范围。
-每个 invocation 必须独占实际写入的完整 word；编译器不承诺证明任意索引表达式互斥。
+每个 invocation 必须独占实际写入的存储单元；word 打包算法必须独占完整 word；编译器不承诺证明任意索引表达式互斥。
 CPU bounds 检查帮助诊断，GPU 正确性依赖内核范围契约与差分测试。
 
 ## 执行与所有权
@@ -93,6 +88,9 @@ ready() 可能保存已完成的回读结果，因此它也会修改后端资源
 `preferHostCached` 仅影响 host-visible storage 的类型偏好，默认 false；
 上传 staging 偏好 coherent，回读 staging 偏好 cached，必要时执行 flush/invalidate。
 新 buffer 逻辑内容为零；device-local buffer 首次提交使用前由 vkCmdFillBuffer 初始化。
+原生 VkImage 使用 DEVICE_LOCAL、optimal tiling 和 storage/transfer usage；首次使用先清零，
+随后保持 GENERAL layout，通过 staging 传输。描述符池同时支持 storage buffer 和 storage image。
+图像尾部不足一个 word 的传输 padding 统一清零。
 
 每个 Submission 保存本次命令、回读快照和时间戳；SubmissionSlot 拥有命令池、命令缓冲区、
 fence、描述符池、可选 query pool，以及上传/回读 staging。fence 完成后先保存数据和时间，
