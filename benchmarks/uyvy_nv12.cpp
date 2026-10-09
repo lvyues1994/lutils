@@ -53,6 +53,8 @@ struct Options {
     bool hostCached = false;
     bool deviceLocal = false;
     bool reuse = true;
+    bool readbackCache = true;
+    std::uint32_t cpuWorkers = 0;
     std::uint32_t pipelineDepth = 0;
     std::vector<fs::path> inputs;
 };
@@ -61,7 +63,8 @@ Options parse(int argc, char **argv) {
         throw std::runtime_error{"usage: uyvy_nv12_benchmark cpu|vulkan width height report.json "
                                  "[--warmup N] [--rounds N] [--batch N] [--require-hardware] "
                                  "[--validation] [--timestamps] [--host-cached] [--device-local] "
-                                 "[--no-reuse] [--pipeline-depth N] input.uyvy [...]"};
+                                 "[--no-reuse] [--no-readback-cache] [--cpu-workers N] "
+                                 "[--pipeline-depth N] input.uyvy [...]"};
     Options out{};
     out.backend = argv[1];
     out.width = number(argv[2]);
@@ -81,8 +84,10 @@ Options parse(int argc, char **argv) {
             out.deviceLocal = true;
         else if (arg == "--no-reuse")
             out.reuse = false;
+        else if (arg == "--no-readback-cache")
+            out.readbackCache = false;
         else if (arg == "--warmup" || arg == "--rounds" || arg == "--batch" ||
-                 arg == "--pipeline-depth") {
+                 arg == "--pipeline-depth" || arg == "--cpu-workers") {
             if (++i == argc)
                 throw std::runtime_error{"missing value after " + arg};
             auto n = number(argv[i]);
@@ -92,6 +97,8 @@ Options parse(int argc, char **argv) {
                 out.rounds = n;
             else if (arg == "--pipeline-depth")
                 out.pipelineDepth = n;
+            else if (arg == "--cpu-workers")
+                out.cpuWorkers = n;
             else
                 out.batch = n;
         } else if (arg.compare(0, 2, "--") == 0)
@@ -101,8 +108,9 @@ Options parse(int argc, char **argv) {
     }
     if (out.inputs.empty() || (out.backend != "cpu" && out.backend != "vulkan"))
         throw std::runtime_error{"expected cpu|vulkan and at least one input file"};
-    if (out.backend == "cpu" && (out.hardware || out.validation || out.timestamps ||
-                                 out.hostCached || out.deviceLocal || !out.reuse))
+    if (out.backend == "cpu" &&
+        (out.hardware || out.validation || out.timestamps || out.hostCached || out.deviceLocal ||
+         !out.reuse || !out.readbackCache))
         throw std::runtime_error{
             "hardware, validation, timestamps and memory options require Vulkan"};
     if (fs::exists(out.report))
@@ -186,8 +194,8 @@ struct Results {
     std::size_t depth = 0;
     std::size_t peakOutstanding = 0;
     std::size_t hostOutputBytes = 0;
-    std::array<std::uint64_t, 3> countsBefore{};
-    std::array<std::uint64_t, 3> countsAfter{};
+    std::array<std::uint64_t, 4> countsBefore{};
+    std::array<std::uint64_t, 4> countsAfter{};
 };
 Results run(co::Device &device, Options const &options, im::FrameDesc const &srcDesc,
             std::vector<im::HostFrame> &inputs) {
@@ -395,7 +403,7 @@ void summary(std::ostream &out, std::vector<double> values) {
 void report(Options const &options, Results const &results, std::uint64_t errors,
             std::uint64_t warnings) {
     std::ofstream out{options.report};
-    out << std::setprecision(9) << "{\n\"schema\":2,\"backend\":";
+    out << std::setprecision(9) << "{\n\"schema\":3,\"backend\":";
     quoted(out, options.backend);
     out << ",\"device\":";
     quoted(out, results.device.name);
@@ -411,8 +419,9 @@ void report(Options const &options, Results const &results, std::uint64_t errors
         << ",\"prefer_host_cached\":" << options.hostCached
         << ",\"device_local\":" << options.deviceLocal
         << ",\"reuse_submission_resources\":" << options.reuse
-        << ",\"warmup_passes\":" << options.warmup << ",\"measured_passes\":" << options.rounds
-        << ",\"batch_limit\":" << options.batch
+        << ",\"readback_cache\":" << options.readbackCache
+        << ",\"cpu_workers\":" << options.cpuWorkers << ",\"warmup_passes\":" << options.warmup
+        << ",\"measured_passes\":" << options.rounds << ",\"batch_limit\":" << options.batch
         << ",\"plan_and_buffer_setup_ms\":" << results.setupMs
         << ",\"storage_buffer_bytes_per_frame\":" << results.deviceBytesPerFrame
         << ",\"oracle\":\"byte_exact_Y_and_rounded_vertical_UV_average\","
@@ -531,7 +540,7 @@ void report(Options const &options, Results const &results, std::uint64_t errors
     out << ",\"device_commands_ms\":";
     array(results.pipelineDevice);
     out << ",\"counter_columns\":[\"submission_slots_created\",\"descriptor_pools_created\","
-           "\"staging_buffers_created\"]";
+           "\"staging_buffers_created\",\"readback_vectors_created\"]";
     out << ",\"counters_after_warmup\":";
     array(results.countsBefore);
     out << ",\"counters_after_measurement\":";
@@ -564,6 +573,8 @@ int main(int argc, char **argv) {
             config.preferHostCached = options.hostCached;
             config.deviceLocal = options.deviceLocal;
             config.reuseSubmissionResources = options.reuse;
+            if (!options.readbackCache)
+                config.maxCachedReadbackBytes = 0;
             config.maxInFlight = options.pipelineDepth
                                      ? static_cast<std::uint32_t>(std::min(
                                            std::size_t{options.pipelineDepth}, inputs.size()))
@@ -573,15 +584,16 @@ int main(int argc, char **argv) {
         }
 #endif
         if (options.backend == "cpu")
-            device = take(co::createCpuDevice());
+            device = take(co::createCpuDevice({options.cpuWorkers, 4096}));
         if (!device)
             throw std::runtime_error{"Vulkan backend is unavailable in this build"};
         std::cout << "device=" << device->info().name << std::endl;
-        auto counters = [&]() -> std::array<std::uint64_t, 3> {
+        auto counters = [&]() -> std::array<std::uint64_t, 4> {
 #ifdef LUTILS_BENCHMARK_VULKAN
             return {statistics->submissionSlotsCreated.load(),
                     statistics->descriptorPoolsCreated.load(),
-                    statistics->stagingBuffersCreated.load()};
+                    statistics->stagingBuffersCreated.load(),
+                    statistics->readbackVectorsCreated.load()};
 #else
             return {};
 #endif

@@ -150,12 +150,23 @@ void reuse(co::VulkanOptions options) {
     auto slots = options.statistics->submissionSlotsCreated.load();
     auto pools = options.statistics->descriptorPoolsCreated.load();
     auto staging = options.statistics->stagingBuffersCreated.load();
+    auto vectors = options.statistics->readbackVectorsCreated.load();
     for (int i = 0; i < 8; ++i)
         ok(take(device->submit(list))->wait());
     CHECK(options.statistics->submissionSlotsCreated.load() == slots);
     CHECK(slots == 1);
     CHECK(options.statistics->descriptorPoolsCreated.load() == pools);
     CHECK(options.statistics->stagingBuffersCreated.load() == staging);
+    CHECK(options.statistics->readbackVectorsCreated.load() == vectors);
+    auto snapshot = take(old->readback(token));
+    co::CommandList changed;
+    ok(changed.upload(b, {100, 200, 300, 400}));
+    auto changedToken = take(changed.readback(b));
+    for (int i = 0; i < 8; ++i) {
+        auto done = take(device->submit(changed));
+        CHECK(*take(done->readback(changedToken)) == std::vector<co::Word>({100, 200, 300, 400}));
+        CHECK(*snapshot == std::vector<co::Word>({5, 7, 9, 11}));
+    }
     auto *timed = dynamic_cast<co::VulkanCompletion *>(old.get());
     CHECK(timed);
     auto elapsed = timed->elapsedNanoseconds();
@@ -173,8 +184,11 @@ void reuse(co::VulkanOptions options) {
     device.reset();
     CHECK(take(old->ready()));
     CHECK(*take(old->readback(token)) == std::vector<co::Word>({5, 7, 9, 11}));
+    old.reset();
+    CHECK(*snapshot == std::vector<co::Word>({5, 7, 9, 11}));
 
     options.maxCachedStagingBytes = 0;
+    options.maxCachedReadbackBytes = 0;
     options.statistics = std::make_shared<co::VulkanStatistics>();
     device = take(co::createVulkanDevice(options));
     a = take(device->createBuffer(1));
@@ -184,6 +198,7 @@ void reuse(co::VulkanOptions options) {
         CHECK(*take(take(device->submit(list))->readback(token)) == std::vector<co::Word>{123});
     CHECK(options.statistics->submissionSlotsCreated.load() == 1);
     CHECK(options.statistics->stagingBuffersCreated.load() == 6);
+    CHECK(options.statistics->readbackVectorsCreated.load() == 3);
 }
 #endif
 int main(int argc, char **argv) {

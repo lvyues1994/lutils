@@ -1,0 +1,65 @@
+name: Linux C++17
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++-18]
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+      - run: cmake --preset release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+      - run: cmake --build --preset release -j2
+      - run: ctest --preset release
+  compute:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [compute-release, compute-sanitize]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v6
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y ninja-build clang-18 llvm-18-dev
+          libclang-18-dev libclang-cpp18-dev libvulkan-dev mesa-vulkan-drivers
+          vulkan-validationlayers glslang-tools spirv-tools
+      - name: Select software Vulkan ICD
+        run: |
+          for path in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.x86_64.json; do
+            if test -f "$path"; then
+              echo "VK_ICD_FILENAMES=$path" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          exit 1
+      - run: cmake --preset ${{ matrix.preset }} -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+      - run: cmake --build --preset ${{ matrix.preset }} -j2
+      - run: ctest --preset ${{ matrix.preset }}
+      - name: Vulkan synchronization validation
+        run: |
+          build/${{ matrix.preset }}/tests/compute_async_tests vulkan --validation
+          build/${{ matrix.preset }}/tests/shader_tests vulkan --validation
+          build/${{ matrix.preset }}/tests/workgroup_tests vulkan --validation
+          build/${{ matrix.preset }}/tests/half_tests vulkan --validation
+      - name: Build SDK archive
+        if: matrix.preset == 'compute-release'
+        run: |
+          cmake --preset sdk-release -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build --preset sdk-release -j2
+          cpack --config build/sdk-release/CPackConfig.cmake -B build/packages
+          cpack --config build/sdk-release/CPackSourceConfig.cmake -B build/packages
+  cpu-thread-sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
+      - run: cmake --preset cpu-tsan
+      - run: cmake --build --preset cpu-tsan -j2
+      - run: ctest --preset cpu-tsan

@@ -1,6 +1,10 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": {"major": 3, "minor": 21, "patch": 0},
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
@@ -16,8 +20,20 @@
         "LUTILS_BUILD_EXAMPLES": true
       }
     },
-    {"name": "debug", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
-    {"name": "release", "inherits": "base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
+    {
+      "name": "debug",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
     {
       "name": "compute-release",
       "inherits": "release",
@@ -30,19 +46,146 @@
     {
       "name": "clang-sanitize",
       "inherits": "debug",
-      "cacheVariables": {"CMAKE_CXX_COMPILER": "clang++", "LUTILS_ENABLE_SANITIZERS": true}
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "LUTILS_INSTALL": false,
+        "LUTILS_ENABLE_SANITIZERS": true
+      }
+    },
+    {
+      "name": "compute-cpu",
+      "inherits": "release",
+      "cacheVariables": {
+        "LUTILS_BUILD_KERNELC": true,
+        "LUTILS_ENABLE_VULKAN": false
+      }
+    },
+    {
+      "name": "compute-sanitize",
+      "inherits": "clang-sanitize",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-18",
+        "CMAKE_CXX_COMPILER": "clang++-18",
+        "LUTILS_BUILD_KERNELC": true,
+        "LUTILS_ENABLE_VULKAN": true
+      }
+    },
+    {
+      "name": "sdk-release",
+      "inherits": "compute-release",
+      "cacheVariables": {
+        "LUTILS_BUILD_TESTS": false,
+        "LUTILS_BUILD_EXAMPLES": false,
+        "LUTILS_BUILD_BENCHMARKS": false,
+        "LUTILS_INSTALL": true
+      }
+    },
+    {
+      "name": "cpu-tsan",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++-18",
+        "LUTILS_ENABLE_TSAN": true,
+        "LUTILS_INSTALL": false,
+        "LUTILS_BUILD_EXAMPLES": false
+      }
     }
   ],
   "buildPresets": [
-    {"name": "debug", "configurePreset": "debug"},
-    {"name": "release", "configurePreset": "release"},
-    {"name": "compute-release", "configurePreset": "compute-release"},
-    {"name": "clang-sanitize", "configurePreset": "clang-sanitize"}
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "compute-release",
+      "configurePreset": "compute-release"
+    },
+    {
+      "name": "clang-sanitize",
+      "configurePreset": "clang-sanitize"
+    },
+    {
+      "name": "compute-cpu",
+      "configurePreset": "compute-cpu"
+    },
+    {
+      "name": "compute-sanitize",
+      "configurePreset": "compute-sanitize"
+    },
+    {
+      "name": "sdk-release",
+      "configurePreset": "sdk-release"
+    },
+    {
+      "name": "cpu-tsan",
+      "configurePreset": "cpu-tsan",
+      "targets": [
+        "cpu_execution_tests"
+      ]
+    }
   ],
   "testPresets": [
-    {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}},
-    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
-    {"name": "compute-release", "configurePreset": "compute-release", "output": {"outputOnFailure": true}},
-    {"name": "clang-sanitize", "configurePreset": "clang-sanitize", "output": {"outputOnFailure": true}}
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "compute-release",
+      "configurePreset": "compute-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "clang-sanitize",
+      "configurePreset": "clang-sanitize",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "compute-cpu",
+      "configurePreset": "compute-cpu",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "compute-sanitize",
+      "configurePreset": "compute-sanitize",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
+    },
+    {
+      "name": "cpu-tsan",
+      "configurePreset": "cpu-tsan",
+      "filter": {
+        "include": {
+          "name": "^compute.execution$"
+        }
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

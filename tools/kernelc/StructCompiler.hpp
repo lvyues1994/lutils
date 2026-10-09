@@ -4,7 +4,7 @@ struct StructCompiler {
     CXXRecordDecl const *entry;
     struct Type {
         std::string glsl, cpp;
-        std::size_t words = 0, align = 1, count = 0;
+        std::size_t bytes = 0, align = 1, count = 0;
         QualType element;
     };
     struct Resource {
@@ -30,11 +30,15 @@ struct StructCompiler {
     std::vector<Resource> resources;
     std::vector<UniformInfo> uniforms;
     std::vector<FieldDecl const *> constants;
+    std::vector<std::pair<FieldDecl const *, Type>> shared;
+    std::size_t sharedBytes = 0, sharedAlignment = 1;
+    bool hasBarrier = false;
+    bool usesHalf = false;
     std::map<ValueDecl const *, std::string> names;
     std::map<FunctionDecl const *, std::string> functions;
     std::set<FunctionDecl const *> active;
     std::vector<std::string> bodies;
-    std::size_t parameterWords = 4;
+    std::size_t parameterBytes = 16;
     unsigned local[3]{1, 1, 1}, next = 0, nextRecord = 0;
     std::string location;
 
@@ -73,19 +77,24 @@ struct StructCompiler {
             out.glsl = "void";
         else if (t->isBooleanType()) {
             out.glsl = "bool";
-            out.words = 1;
+            out.bytes = out.align = 4;
         } else if (t->isSpecificBuiltinType(BuiltinType::UInt)) {
             out.glsl = "uint";
-            out.words = 1;
+            out.bytes = out.align = 4;
         } else if (t->isSpecificBuiltinType(BuiltinType::Int)) {
             out.glsl = "int";
-            out.words = 1;
+            out.bytes = out.align = 4;
         } else if (t->isSpecificBuiltinType(BuiltinType::Float)) {
             out.glsl = "float";
-            out.words = 1;
+            out.bytes = out.align = 4;
         } else if (t->isSpecificBuiltinType(BuiltinType::Double)) {
             out.glsl = "double";
-            out.words = out.align = 2;
+            out.bytes = out.align = 8;
+        } else if (auto *r = t->getAsCXXRecordDecl();
+                   r && r->getQualifiedNameAsString() == "lutils::compute::kernel::half") {
+            out.glsl = "float16_t";
+            out.bytes = out.align = 2;
+            usesHalf = true;
         } else if (auto *s = special(t)) {
             auto name = templateName(t);
             auto const &args = s->getTemplateArgs();
@@ -93,26 +102,27 @@ struct StructCompiler {
                 name == "lutils::compute::kernel::Components") {
                 auto base = type(args[0].getAsType());
                 auto n = args[1].getAsIntegral().getZExtValue();
-                auto prefix = base.glsl == "float"    ? ""
-                              : base.glsl == "uint"   ? "u"
-                              : base.glsl == "int"    ? "i"
-                              : base.glsl == "double" ? "d"
-                                                      : "b";
+                auto prefix = base.glsl == "float"       ? ""
+                              : base.glsl == "uint"      ? "u"
+                              : base.glsl == "int"       ? "i"
+                              : base.glsl == "double"    ? "d"
+                              : base.glsl == "float16_t" ? "f16"
+                                                         : "b";
                 out.glsl = prefix + std::string{"vec"} + std::to_string(n);
-                out.words = base.words * n;
+                out.bytes = base.bytes * n;
                 out.align = base.align * (n == 2 ? 2 : 4);
             } else if (name == "std::array") {
                 auto base = type(args[0].getAsType());
                 out.count = args[1].getAsIntegral().getZExtValue();
                 if (!out.count || base.count ||
                     out.count >
-                        UINT32_MAX / std::max<std::size_t>(1, alignTo(base.words, base.align)))
+                        UINT32_MAX / std::max<std::size_t>(1, alignTo(base.bytes, base.align)))
                     fail(entry,
                          "shader arrays require a positive bounded size and a non-array element");
                 out.element = args[0].getAsType();
                 out.glsl = base.glsl;
                 out.align = base.align;
-                out.words = alignTo(base.words, base.align) * out.count;
+                out.bytes = alignTo(base.bytes, base.align) * out.count;
             } else
                 fail(entry, "unsupported shader template type: " + t.getAsString());
         } else if (auto *r = t->getAsCXXRecordDecl()) {
@@ -128,13 +138,13 @@ struct StructCompiler {
                     fail(f, "struct fields must be mutable public values");
                 auto ft = type(f->getType());
                 out.align = std::max(out.align, ft.align);
-                out.words = alignTo(out.words, ft.align);
-                record.fields.push_back({f, out.words});
-                out.words += ft.words;
+                out.bytes = alignTo(out.bytes, ft.align);
+                record.fields.push_back({f, out.bytes});
+                out.bytes += ft.bytes;
             }
             if (record.fields.empty())
                 fail(r, "empty shader struct");
-            out.words = alignTo(out.words, out.align);
+            out.bytes = alignTo(out.bytes, out.align);
             record.type = out;
             records.push_back(record);
         } else
@@ -263,10 +273,24 @@ struct StructCompiler {
                 auto value = type(args[0].getAsType());
                 if (value.count || value.glsl == "void")
                     fail(f, "uniforms must be scalar, vector or value structs");
-                parameterWords = alignTo(parameterWords, value.align);
+                parameterBytes = alignTo(parameterBytes, value.align);
                 names[f] = "p.u" + std::to_string(uniforms.size());
-                uniforms.push_back({f, value, slot, parameterWords});
-                parameterWords += value.words;
+                uniforms.push_back({f, value, slot, parameterBytes});
+                parameterBytes += value.bytes;
+            } else if (tn == "lutils::compute::kernel::SharedArray") {
+                if (f->hasInClassInitializer())
+                    fail(f, "shared arrays cannot have an initializer");
+                auto element = type(args[0].getAsType());
+                auto count = args[1].getAsIntegral().getZExtValue();
+                if (!count || element.count ||
+                    count > 65536 / alignTo(element.bytes, element.align))
+                    fail(f, "shared arrays require a positive bounded size");
+                element.count = count;
+                element.bytes = alignTo(element.bytes, element.align) * count;
+                sharedBytes = alignTo(sharedBytes, element.align) + element.bytes;
+                sharedAlignment = std::max(sharedAlignment, element.align);
+                names[f] = "shared_data.s" + std::to_string(shared.size());
+                shared.push_back({f, element});
             } else if (tn == "std::array" && f->hasInClassInitializer()) {
                 Expr::EvalResult constant;
                 if (!f->getInClassInitializer()->EvaluateAsRValue(constant, ctx) ||
@@ -280,7 +304,7 @@ struct StructCompiler {
         }
         if (!hasLocal)
             fail(entry, "kernel requires local_size");
-        if (parameterWords > 32)
+        if (parameterBytes > 128)
             fail(entry, "uniforms plus dispatch extent exceed 128 bytes");
     }
     void touch(Expr const *e, bool write) {
@@ -330,7 +354,59 @@ struct StructCompiler {
         }
         fail(e, "swizzle conversion requires a literal subscript");
     }
+    bool atomicCall(Stmt const *s) const {
+        auto *e = dyn_cast<Expr>(s);
+        auto *c = e ? dyn_cast<CallExpr>(strip(e)->IgnoreParenImpCasts()) : nullptr;
+        auto *f = c ? c->getDirectCallee() : nullptr;
+        if (!f || f->getQualifiedNameAsString().rfind("lutils::compute::kernel::", 0) != 0)
+            return false;
+        static std::set<std::string> names{"atomicAdd",      "atomicMin",     "atomicMax",
+                                           "atomicAnd",      "atomicOr",      "atomicXor",
+                                           "atomicExchange", "atomicCompSwap"};
+        return names.count(f->getNameAsString()) != 0;
+    }
+    ValueDecl const *storageRoot(Expr const *e) const {
+        e = strip(e)->IgnoreParenImpCasts();
+        if (auto *m = dyn_cast<MemberExpr>(e)) {
+            if (isa<CXXThisExpr>(m->getBase()->IgnoreParenImpCasts()))
+                return m->getMemberDecl();
+            return storageRoot(m->getBase());
+        }
+        if (auto *c = dyn_cast<CXXOperatorCallExpr>(e); c && c->getOperator() == OO_Subscript)
+            return storageRoot(c->getArg(0));
+        if (auto *a = dyn_cast<ArraySubscriptExpr>(e))
+            return storageRoot(a->getBase());
+        return nullptr;
+    }
+    bool containsReturn(Stmt const *s) const {
+        if (isa<ReturnStmt>(s))
+            return true;
+        for (auto *child : s->children())
+            if (child && containsReturn(child))
+                return true;
+        return false;
+    }
+    void validateBarriers(Stmt const *s, CompoundStmt const *body) {
+        if (auto *c = dyn_cast<CallExpr>(s)) {
+            auto *f = c->getDirectCallee();
+            if (f && f->getQualifiedNameAsString() == "lutils::compute::kernel::barrier") {
+                bool direct = false;
+                if (body)
+                    for (auto *statement : body->body())
+                        if (auto *e = dyn_cast<Expr>(statement))
+                            direct |= strip(e)->IgnoreParenImpCasts() == c;
+                if (!direct)
+                    fail(c, "barrier must be a top-level statement in main");
+                hasBarrier = true;
+            }
+        }
+        for (auto *child : s->children())
+            if (child)
+                validateBarriers(child, body);
+    }
     bool mutates(Stmt const *s) const {
+        if (auto *c = dyn_cast<CallExpr>(s); c && atomicCall(c))
+            return true;
         if (auto *u = dyn_cast<UnaryOperator>(s); u && u->isIncrementDecrementOp())
             return true;
         if (auto *b = dyn_cast<BinaryOperator>(s); b && b->isAssignmentOp())
@@ -348,7 +424,7 @@ struct StructCompiler {
     }
     std::string expr(Expr const *original, bool write = false, bool allowMutation = false) {
         auto *e = strip(original);
-        if (!allowMutation && mutates(e))
+        if (!allowMutation && mutates(e) && !atomicCall(e))
             fail(e, "nested mutation has no portable shader evaluation order");
         if (isa<CXXNewExpr>(e) || isa<CXXDeleteExpr>(e))
             fail(e, "dynamic allocation is unsupported");
@@ -518,6 +594,9 @@ struct StructCompiler {
             auto *m = c->getMethodDecl();
             auto *object = c->getImplicitObjectArgument();
             if (isa<CXXConversionDecl>(m) &&
+                m->getParent()->getQualifiedNameAsString() == "lutils::compute::kernel::half")
+                return type(c->getType()).glsl + "(" + expr(object) + ")";
+            if (isa<CXXConversionDecl>(m) &&
                 templateName(object->getType()) == "lutils::compute::kernel::SwizzleValue") {
                 if (swizzleWidth(object) != 1)
                     fail(e, "scalar swizzle requires one component");
@@ -545,9 +624,27 @@ struct StructCompiler {
             auto q = f->getQualifiedNameAsString(), n = f->getNameAsString();
             if (q.rfind("lutils::compute::kernel::", 0) == 0) {
                 static std::set<std::string> intrinsic{
-                    "dot",  "cross", "length", "normalize", "reflect",    "min",
-                    "max",  "clamp", "sqrt",   "abs",       "pow",        "floor",
-                    "ceil", "sin",   "cos",    "imageLoad", "imageStore", "imageSize"};
+                    "dot",   "cross",     "length",     "normalize", "reflect", "min",  "max",
+                    "clamp", "sqrt",      "abs",        "pow",       "floor",   "ceil", "sin",
+                    "cos",   "imageLoad", "imageStore", "imageSize", "barrier"};
+                if (atomicCall(c)) {
+                    for (auto *argument : c->arguments())
+                        if (mutates(argument))
+                            fail(argument, "nested mutation in atomic arguments is unsupported");
+                    auto *root = storageRoot(c->getArg(0));
+                    bool valid = false;
+                    for (auto &r : resources)
+                        if (r.field == root && !r.dimensions) {
+                            valid = true;
+                            r.read = r.write = true;
+                        }
+                    for (auto const &v : shared)
+                        valid |= v.first == root;
+                    auto value = type(c->getArg(0)->getType());
+                    if (!valid || (value.glsl != "int" && value.glsl != "uint"))
+                        fail(e, "atomics require int32/uint32 buffer or shared lvalues");
+                    return n + "(" + expr(c->getArg(0), true) + "," + args(c, 1) + ")";
+                }
                 if (!intrinsic.count(n))
                     fail(e, "unsupported shader intrinsic: " + n);
                 if (n == "imageStore") {
@@ -627,6 +724,9 @@ struct StructCompiler {
             return it->second;
         if (d->isVariadic())
             fail(f, "variadic helpers are unsupported");
+        validateBarriers(d->getBody(), main ? dyn_cast<CompoundStmt>(d->getBody()) : nullptr);
+        if (main && hasBarrier && containsReturn(d->getBody()))
+            fail(d, "barrier kernels cannot return early");
         std::string n = main ? "kernel_main" : "fn" + std::to_string(functions.size());
         functions.emplace(key, n);
         active.insert(key);
@@ -659,13 +759,23 @@ struct StructCompiler {
         for (auto *f : constants)
             initializers.push_back(expr(f->getInClassInitializer()));
         std::ostringstream out;
-        out << "#version 450\nlayout(local_size_x=" << local[0] << ",local_size_y=" << local[1]
+        out << "#version 450\n";
+        if (usesHalf)
+            out << "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n"
+                   "#extension GL_EXT_shader_16bit_storage : require\n";
+        out << "layout(local_size_x=" << local[0] << ",local_size_y=" << local[1]
             << ",local_size_z=" << local[2] << ") in;\n";
         for (auto const &r : records) {
             out << "struct " << r.type.glsl << " {\n";
             for (auto const &f : r.fields)
                 out << declaration(type(f.first->getType()), f.first->getNameAsString()) << ";\n";
             out << "};\n";
+        }
+        if (!shared.empty()) {
+            out << "struct SharedData {\n";
+            for (std::size_t i = 0; i < shared.size(); ++i)
+                out << declaration(shared[i].second, "s" + std::to_string(i)) << ";\n";
+            out << "};\nshared SharedData shared_data;\n";
         }
         for (std::size_t i = 0; i < resources.size(); ++i) {
             auto const &r = resources[i];
@@ -680,7 +790,7 @@ struct StructCompiler {
         }
         out << "layout(push_constant,std430) uniform Params { layout(offset=0) uvec4 extent;\n";
         for (auto const &u : uniforms)
-            out << "layout(offset=" << u.offset * 4 << ") "
+            out << "layout(offset=" << u.offset << ") "
                 << declaration(u.type, names[u.field].substr(2)) << ";\n";
         out << "} p;\n";
         for (std::size_t i = 0; i < constants.size(); ++i)
@@ -688,8 +798,10 @@ struct StructCompiler {
                 << " = " << initializers[i] << ";\n";
         for (auto const &b : bodies)
             out << b << "\n";
-        out << "void main() { if(any(greaterThanEqual(gl_GlobalInvocationID,p.extent.xyz))) "
-               "return; kernel_main(); }\n";
+        out << "void main() { ";
+        if (shared.empty() && !hasBarrier)
+            out << "if(any(greaterThanEqual(gl_GlobalInvocationID,p.extent.xyz))) return; ";
+        out << "kernel_main(); }\n";
         return out.str();
     }
     std::string qualified() const { return "::" + entry->getQualifiedNameAsString(); }
@@ -731,13 +843,17 @@ struct StructCompiler {
                 if (!std::isalnum(static_cast<unsigned char>(c)))
                     c = '_';
             o << "#ifndef " << guard << "\n#define " << guard << "\ntemplate<> struct StorageCodec<"
-              << r.type.cpp << "> {\nstatic constexpr std::size_t words=" << r.type.words
-              << ", alignment=" << r.type.align << ";\nstatic " << r.type.cpp
-              << " read(Word const *p) { " << r.type.cpp << " v{};\n";
+              << r.type.cpp << "> {\nstatic constexpr std::size_t bytes=" << r.type.bytes
+              << ", alignmentBytes=" << r.type.align
+              << ";\nstatic constexpr std::size_t words=(bytes+3)/4, "
+                 "alignment=(alignmentBytes+3)/4;\nstatic "
+              << r.type.cpp << " read(void const *data) { auto const *p=storageBytes(data); "
+              << r.type.cpp << " v{};\n";
             for (auto const &f : r.fields)
                 o << "v." << f.first->getNameAsString() << "=StorageCodec<"
                   << cppType(f.first->getType()) << ">::read(p+" << f.second << ");\n";
-            o << "return v; }\nstatic void write(Word *p," << r.type.cpp << " const &v) {\n";
+            o << "return v; }\nstatic void write(void *data," << r.type.cpp
+              << " const &v) { auto *p=storageBytes(data);\n";
             for (auto const &f : r.fields)
                 o << "StorageCodec<" << cppType(f.first->getType()) << ">::write(p+" << f.second
                   << ",v." << f.first->getNameAsString() << ");\n";
@@ -756,8 +872,8 @@ struct StructCompiler {
           << "\nnamespace lutils::compute {\nKernelSource KernelTraits<" << qualified()
           << ">::source() { KernelSource s; s.abiVersion=2; s.name=" << std::quoted(location)
           << "; s.localSize={" << local[0] << "," << local[1] << "," << local[2]
-          << "}; s.parameterWords=" << parameterWords << ";\ns.spirv=lutils::generated::spirv_"
-          << packageName << "();\n";
+          << "}; s.parameterWords=" << (parameterBytes + 3) / 4
+          << ";\ns.spirv=lutils::generated::spirv_" << packageName << "();\n";
         for (auto const &r : resources) {
             o << "s.bindings.push_back(Access::"
               << (r.write ? (r.read ? "ReadWrite" : "Write") : "Read")
@@ -766,11 +882,15 @@ struct StructCompiler {
                 o << "1,ImageDesc{kernel::ImageFormat::" << r.type.cpp << "," << r.dimensions
                   << ",{1,1,1}}";
             else
-                o << alignTo(r.type.words, r.type.align) << ",{}";
+                o << (alignTo(r.type.bytes, r.type.align) + 3) / 4 << ",{},"
+                  << alignTo(r.type.bytes, r.type.align);
             o << "});\n";
         }
+        o << "s.sharedMemoryBytes=" << alignTo(sharedBytes, sharedAlignment)
+          << "; s.requiresFullWorkgroups=" << (!shared.empty() || hasBarrier ? "true" : "false")
+          << ";\n";
         o << "s.cpuDispatch=+[](Extent3 extent,std::vector<CpuBuffer> const &b,std::vector<Word> "
-             "const &p) { "
+             "const &p,CpuExecution &execution) { "
           << qualified() << " k{}; (void)p;\n";
         for (std::size_t i = 0; i < resources.size(); ++i) {
             auto const &r = resources[i];
@@ -784,8 +904,15 @@ struct StructCompiler {
         }
         for (auto const &u : uniforms)
             o << "k." << u.field->getNameAsString() << "=StorageCodec<" << u.type.cpp
-              << ">::read(p.data()+" << u.offset << ");\n";
-        o << "executeCpu(k,extent,{" << local[0] << "," << local[1] << "," << local[2] << "});\n";
+              << ">::read(storageBytes(p.data())+" << u.offset << ");\n";
+        for (std::size_t i = 0; i < shared.size(); ++i) {
+            auto const &v = shared[i];
+            o << "std::array<" << v.second.cpp << "," << v.second.count << "> shared" << i << "; k."
+              << v.first->getNameAsString() << ".cpuView(shared" << i << ".data());\n";
+        }
+        o << "executeCpu<" << local[0] << "," << local[1] << "," << local[2]
+          << ">(k,extent,execution," << (!shared.empty() || hasBarrier ? "true" : "false")
+          << ");\n";
         for (std::size_t i = 0; i < resources.size(); ++i)
             if (!resources[i].dimensions && resources[i].write)
                 o << "v" << i << ".flush();\n";
@@ -810,11 +937,11 @@ struct StructCompiler {
              "extent});\n}\n";
         o << "std::vector<Word> KernelTraits<" << qualified() << ">::pack(" << qualified()
           << " const &k,Extent3 extent) { (void)k;\n";
-        o << "std::vector<Word> p(" << parameterWords
+        o << "std::vector<Word> p(" << (parameterBytes + 3) / 4
           << ",0); p[0]=extent.x;p[1]=extent.y;p[2]=extent.z;\n";
         for (auto const &u : uniforms)
-            o << "StorageCodec<" << u.type.cpp << ">::write(p.data()+" << u.offset << ",k."
-              << u.field->getNameAsString() << ".value);\n";
+            o << "StorageCodec<" << u.type.cpp << ">::write(storageBytes(p.data())+" << u.offset
+              << ",k." << u.field->getNameAsString() << ".value);\n";
         o << "return p;\n}\n}\n";
         return o.str();
     }

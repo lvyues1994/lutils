@@ -83,6 +83,8 @@ struct DeviceState {
     VkPhysicalDeviceMemoryProperties memory{};
     VulkanOptions options;
     std::uint32_t timestampBits = 0;
+    ComputeCapabilities capabilities;
+    bool uniformBuffer16 = false;
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger = nullptr;
     DeviceState() = default;
@@ -199,6 +201,47 @@ struct DeviceState {
             features.shaderStorageImageExtendedFormats;
         enabledFeatures.shaderFloat64 = features.shaderFloat64;
         d.pEnabledFeatures = &enabledFeatures;
+        std::uint32_t extensionCount = 0;
+        check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extensionCount, nullptr),
+              "enumerate device extensions");
+        std::vector<VkExtensionProperties> available(extensionCount);
+        check(vkEnumerateDeviceExtensionProperties(physical, nullptr, &extensionCount,
+                                                   available.data()),
+              "enumerate device extensions");
+        char const *halfExtension = VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME;
+        bool hasHalf = std::any_of(available.begin(), available.end(), [&](auto const &e) {
+            return std::strcmp(e.extensionName, halfExtension) == 0;
+        });
+        auto storage16 = structure<VkPhysicalDevice16BitStorageFeatures>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES);
+        auto arithmetic16 = structure<VkPhysicalDeviceShaderFloat16Int8Features>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES);
+        auto queried =
+            structure<VkPhysicalDeviceFeatures2>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+        queried.pNext = &storage16;
+        if (hasHalf)
+            storage16.pNext = &arithmetic16;
+        vkGetPhysicalDeviceFeatures2(physical, &queried);
+        if (!options.enableFloat16) {
+            storage16.storageBuffer16BitAccess = VK_FALSE;
+            storage16.uniformAndStorageBuffer16BitAccess = VK_FALSE;
+            storage16.storagePushConstant16 = VK_FALSE;
+            arithmetic16.shaderFloat16 = VK_FALSE;
+        }
+        storage16.storageInputOutput16 = VK_FALSE;
+        arithmetic16.shaderInt8 = VK_FALSE;
+        d.pNext = &storage16;
+        if (hasHalf && options.enableFloat16) {
+            d.enabledExtensionCount = 1;
+            d.ppEnabledExtensionNames = &halfExtension;
+        } else
+            storage16.pNext = nullptr;
+        capabilities = {arithmetic16.shaderFloat16 != VK_FALSE,
+                        storage16.storageBuffer16BitAccess != VK_FALSE,
+                        storage16.storagePushConstant16 != VK_FALSE,
+                        properties.limits.maxComputeWorkGroupInvocations,
+                        properties.limits.maxComputeSharedMemorySize};
+        uniformBuffer16 = storage16.uniformAndStorageBuffer16BitAccess != VK_FALSE;
         check(vkCreateDevice(physical, &d, nullptr, &device), "vkCreateDevice");
         vkGetDeviceQueue(device, family, 0, &queue);
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
@@ -211,6 +254,7 @@ struct VulkanBuffer final : Buffer {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void *mapped = nullptr;
     std::size_t words = 0;
+    std::size_t logicalBytes = 0;
     bool coherent = false;
     bool initialized = false;
     explicit VulkanBuffer(std::shared_ptr<DeviceState> s) : state(std::move(s)) {}
@@ -225,6 +269,9 @@ struct VulkanBuffer final : Buffer {
             vkFreeMemory(state->device, memory, nullptr);
     }
     std::size_t wordCount() const noexcept override { return words; }
+    std::size_t byteCount() const noexcept override {
+        return logicalBytes ? logicalBytes : words * 4;
+    }
     void initialize(std::size_t count, BufferKind kind = BufferKind::Storage) {
         words = count;
         auto create = structure<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
@@ -558,8 +605,38 @@ struct SlotPool {
     std::shared_ptr<DeviceState> state;
     std::vector<std::unique_ptr<SubmissionSlot>> idle;
     std::size_t cachedBytes = 0;
+    std::vector<std::shared_ptr<std::vector<Word>>> readbacks;
+    std::size_t readbackBytes = 0;
     explicit SlotPool(std::shared_ptr<DeviceState> s) : state(std::move(s)) {
         idle.reserve(state->options.maxInFlight);
+    }
+    std::shared_ptr<std::vector<Word>> acquireReadback(std::size_t count) {
+        for (auto const &buffer : readbacks)
+            if (buffer.use_count() == 1 && buffer->size() == count)
+                return buffer;
+        auto buffer = std::make_shared<std::vector<Word>>(count);
+        if (state->options.statistics)
+            state->options.statistics->readbackVectorsCreated.fetch_add(1,
+                                                                        std::memory_order_relaxed);
+        auto bytes = count * sizeof(Word);
+        auto limit =
+            state->options.reuseSubmissionResources ? state->options.maxCachedReadbackBytes : 0;
+        if (bytes && bytes <= limit) {
+            // Evict only idle entries; externally held snapshots keep their storage.
+            for (auto it = readbacks.begin();
+                 it != readbacks.end() && readbackBytes > limit - bytes;) {
+                if (it->use_count() == 1) {
+                    readbackBytes -= (*it)->size() * sizeof(Word);
+                    it = readbacks.erase(it);
+                } else
+                    ++it;
+            }
+            if (readbackBytes <= limit - bytes) {
+                readbacks.push_back(buffer);
+                readbackBytes += bytes;
+            }
+        }
+        return buffer;
     }
     std::unique_ptr<SubmissionSlot> acquire() {
         if (!idle.empty()) {
@@ -836,7 +913,7 @@ void record(Submission &submission) {
             // Allocate before queue submission, so completion/recycling need no
             // result allocations.
             submission.results.push_back(
-                {r->token, std::make_shared<std::vector<Word>>(r->buffer->wordCount())});
+                {r->token, submission.pool->acquireReadback(r->buffer->wordCount())});
         }
     }
     slot.prepare(sets, descriptors);
@@ -895,7 +972,7 @@ struct VulkanDevice final : Device {
     DeviceInfo info() const override {
         return {state->properties.deviceName,
                 state->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU,
-                state->properties.limits.maxStorageBufferRange};
+                state->properties.limits.maxStorageBufferRange, state->capabilities};
     }
     bool get(BufferHandle const &buffer) const {
         if (auto const *image = dynamic_cast<VulkanImage *>(buffer.get()))
@@ -927,6 +1004,14 @@ struct VulkanDevice final : Device {
             return deviceError(e);
         }
     }
+    Result<BufferHandle> createBufferBytes(std::size_t bytes) override {
+        if (bytes > state->properties.limits.maxStorageBufferRange)
+            return Error{ErrorCode::Unsupported, "buffer exceeds device limit"};
+        auto result = createBuffer((bytes + 3) / 4);
+        if (result)
+            static_cast<VulkanBuffer *>(result.value().get())->logicalBytes = bytes;
+        return result;
+    }
     Result<KernelHandle> createKernel(KernelSource source) override {
         auto status = validate(source);
         if (!status)
@@ -944,7 +1029,22 @@ struct VulkanDevice final : Device {
         VkPhysicalDeviceFeatures features{};
         vkGetPhysicalDeviceFeatures(state->physical, &features);
         for (std::size_t i = 5; i < source.spirv.size(); i += source.spirv[i] >> 16) {
+            if ((source.spirv[i] & 0xffffu) == 224u && !source.requiresFullWorkgroups)
+                return Error{ErrorCode::InvalidArgument,
+                             "barrier requires complete workgroup metadata"};
+            if ((source.spirv[i] & 0xffffu) == 59u && (source.spirv[i] >> 16) >= 4u &&
+                source.spirv[i + 3] == 4u &&
+                (!source.sharedMemoryBytes || !source.requiresFullWorkgroups))
+                return Error{ErrorCode::InvalidArgument,
+                             "shared storage requires workgroup metadata"};
             if ((source.spirv[i] & 0xffffu) == 17u && (source.spirv[i] >> 16) == 2u) {
+                auto capability = source.spirv[i + 1];
+                if ((capability == 9u && !state->capabilities.float16) ||
+                    (capability == 4433u && !state->capabilities.storageBuffer16) ||
+                    (capability == 4434u && !state->uniformBuffer16) ||
+                    (capability == 4435u && !state->capabilities.pushConstant16))
+                    return Error{ErrorCode::Unsupported,
+                                 "required FP16 capability was not enabled"};
                 if (source.spirv[i + 1] == 10u && !features.shaderFloat64)
                     return Error{ErrorCode::Unsupported, "device does not support Float64"};
                 if (source.spirv[i + 1] == 49u && !features.shaderStorageImageExtendedFormats)
@@ -961,7 +1061,8 @@ struct VulkanDevice final : Device {
             images > limits.maxPerStageDescriptorStorageImages ||
             images > limits.maxDescriptorSetStorageImages ||
             source.bindings.size() > limits.maxPerStageResources ||
-            source.parameterWords * 4 > limits.maxPushConstantsSize)
+            source.parameterWords * 4 > limits.maxPushConstantsSize ||
+            source.sharedMemoryBytes > limits.maxComputeSharedMemorySize)
             return Error{ErrorCode::Unsupported, "kernel exceeds Vulkan device limits"};
         try {
             auto result = std::make_shared<VulkanKernel>(state, std::move(source));

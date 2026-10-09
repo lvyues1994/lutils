@@ -17,10 +17,10 @@ Release 的 NDEBUG）及常规 -D/-U 按编译顺序同步。语言条件表达�
 | 模块 | 职责 | 依赖 |
 | --- | --- | --- |
 | image | 固定块线性格式、颜色描述、平面视图、布局验证、HostFrame | core 的 Result |
-| compute/kernel | 向量、Pixel、BufferBinding、ImageBinding、Uniform、内建值 | C++17 标准库 |
+| compute/kernel | half、向量、Pixel、bindings、Uniform、SharedArray、内建值 | C++17 标准库 |
 | tools/kernelc | AST 校验、std430 布局、GLSL 与 CPU 包装生成 | Clang/LLVM，仅构建期 |
-| compute/runtime | 类型化 Backend、主机资源、codec、命令与设备接口 | core、kernel |
-| compute/backends | CPU 参考执行和 Vulkan 单计算队列 | runtime，Vulkan 后端私有依赖 loader |
+| compute/runtime | 类型化 Backend、主机资源、codec、命令与设备接口 | core、kernel、Threads |
+| compute/backends | CPU 线程池/工作组执行和 Vulkan 单计算队列 | runtime，Vulkan 后端私有依赖 loader |
 | image/ops | 转换计划、设备帧、打包传输和图像内核 | image、runtime、生成内核 |
 
 core 仅提供各模块共用的结果头文件。原 erasure 模块独立，不把动态分发放进像素循环。
@@ -48,7 +48,8 @@ HostFrame 拥有内存，view() 即时生成借用关系；视图不可超出所
 主入口是带 `LUTILS_KERNEL` 标记的聚合结构体，直接在 `main()` 中通过成员 binding 读写资源。
 类型、资源、格式、数组、Uniform、支持语法与构建方式见 [PDF 功能对齐](pdf-parity.md)。
 类内核使用 ABI v2：资源描述包含逻辑 slot、元素 stride 或图像格式/维度；工作组支持三维。
-前 16 字节参数保存实际执行范围，入口自动跳过补齐的工作项。Vulkan 校验 SPIR-V LocalSize
+前 16 字节参数保存实际执行范围，普通内核入口自动跳过补齐的工作项；共享内存/屏障内核要求完整工作组。
+类型化 stride 按字节描述，支持 half 的 2 字节元素；传输仍使用补齐的 word 容器。Vulkan 校验 SPIR-V LocalSize
 和主机元数据一致，并检查设备能力。原有图像转换已迁移到这个入口。
 
 旧普通函数入口保留 ABI v1，仍使用 Invocation、ReadBuffer/WriteBuffer 和扁平 Params。
@@ -57,7 +58,8 @@ HostFrame 拥有内存，view() 即时生成借用关系；视图不可超出所
 
 整数算法需避免 signed overflow、负数右移、非法移位和除零。
 浮点不保证跨 CPU/GPU 位级一致；每个算法单独声明误差范围。
-每个 invocation 必须独占实际写入的存储单元；word 打包算法必须独占完整 word；编译器不承诺证明任意索引表达式互斥。
+普通写入必须独占实际存储单元；word 打包算法必须独占完整 word。共享访问规则见
+[计算能力](compute-capabilities.md)；编译器不证明任意索引表达式互斥。
 CPU bounds 检查帮助诊断，GPU 正确性依赖内核范围契约与差分测试。
 
 ## 执行与所有权
@@ -73,7 +75,7 @@ readback 返回不透明 ReadbackToken；Completion::readback(token) 等待并�
 同一列表可以重复提交，token 随列表复制，但每次提交分别保存回读结果。
 空 token 和不属于该提交的 token 返回 InvalidArgument。
 快照可以比 Completion 活得更久；旧 Completion 的结果和时间戳不受执行槽复用影响。
-CPU 同步解释相同命令流，Vulkan 将它们录进同一命令缓冲区。
+CPU 按提交顺序执行命令，单次类内核内部可并行；Vulkan 将命令录进同一命令缓冲区。
 
 同一 Device 及其所有 Completion 的方法调用必须由调用方统一串行化。
 异步表示提交后可以继续准备和提交其他帧；当前接口不提供线程安全保证。
@@ -101,8 +103,10 @@ fence、描述符池、可选 query pool，以及上传/回读 staging。fence �
 submit 等待并回收最早提交，再接受新任务，避免无限累积。
 `maxCachedStagingBytes` 默认 64 MiB，限制空闲槽保留的 staging 有效容量；
 在途 staging、分配对齐开销、调用方保留的结果快照不计入该缓存预算。
-`VulkanStatistics` 统计执行槽、描述符池、staging buffer 的累计创建次数。
-复用这些资源不等于零分配：每帧仍有打包数据、回读结果和命令描述的主机分配。
+`maxCachedReadbackBytes` 默认 64 MiB，单独限制结果 vector 的缓存容量。仅当缓存成为该 vector
+的唯一持有者时才复用；外部保留的 Completion/快照阻止复用。预算不足时新结果正常分配但不进入缓存。
+`VulkanStatistics` 统计执行槽、描述符池、staging buffer、回读 vector 的累计创建次数。
+每帧仍有上传打包和命令描述等分配；性能边界见 [测量报告](compute-performance.md)。
 
 VulkanDevice 保留 pending submissions，Submission 不反向持有 VulkanDevice。
 丢弃 Completion 不会释放未完成任务需要的资源。Device 销毁时等待全部提交；

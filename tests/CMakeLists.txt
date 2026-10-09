@@ -20,6 +20,19 @@ foreach(case IN ITEMS empty-owner empty-borrow noexcept-call)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_termination.cmake")
 endforeach()
 
+if(LUTILS_INSTALL AND lutils_top_level)
+    add_test(NAME downstream.packages COMMAND ${CMAKE_COMMAND}
+        -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-check -DCOMPILER=${CMAKE_CXX_COMPILER}
+        -DFULL=${LUTILS_BUILD_KERNELC} -DGPU=${LUTILS_ENABLE_VULKAN}
+        -DLLVM_DIR=${LLVM_DIR} -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR}
+        -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
+        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        -DCPACK=${CMAKE_CPACK_COMMAND} -DCTEST=${CMAKE_CTEST_COMMAND}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/downstream/package.cmake)
+    set_tests_properties(downstream.packages PROPERTIES TIMEOUT 300 LABELS downstream)
+endif()
+
 foreach(case IN ITEMS cycle missing_member const_mutation copy_move_only)
     add_test(NAME erasure.reject.${case}
         COMMAND ${CMAKE_COMMAND}
@@ -35,6 +48,25 @@ endforeach()
 add_executable(image_tests image_tests.cpp)
 target_link_libraries(image_tests PRIVATE lutils::image lutils_development)
 add_test(NAME image.contracts COMMAND image_tests)
+add_executable(cpu_execution_tests compute/execution.cpp)
+target_link_libraries(cpu_execution_tests PRIVATE lutils::compute lutils_development)
+add_test(NAME compute.execution COMMAND cpu_execution_tests)
+set_tests_properties(compute.execution PROPERTIES TIMEOUT 30)
+
+foreach(mode IN ITEMS source install)
+    if(mode STREQUAL "install" AND NOT LUTILS_INSTALL)
+        continue()
+    endif()
+    add_test(NAME downstream.${mode} COMMAND ${CMAKE_COMMAND}
+        -DMODE=${mode} -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/downstream-${mode}
+        -DCOMPILER=${CMAKE_CXX_COMPILER} -DFULL=${LUTILS_BUILD_KERNELC}
+        -DGPU=${LUTILS_ENABLE_VULKAN} -DLLVM_DIR=${LLVM_DIR}
+        -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR} -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
+        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/downstream/check.cmake)
+    set_tests_properties(downstream.${mode} PROPERTIES TIMEOUT 300 LABELS downstream)
+endforeach()
 
 if(LUTILS_BUILD_KERNELC)
     lutils_add_kernel(lutils_add_test_kernel NAME add SOURCE compute/add_kernel.cpp ENTRY lutils_test::add)
@@ -101,6 +133,35 @@ if(LUTILS_BUILD_KERNELC)
 endif()
 
 if(LUTILS_BUILD_KERNELC)
+    add_executable(workgroup_tests compute/workgroup.cpp)
+    target_link_libraries(workgroup_tests PRIVATE lutils::compute_cpu lutils_development)
+    foreach(pair IN ITEMS "reduction;Reduction" "histogram;Histogram" "atomic_ops;AtomicOps" "cancellation;Cancellation" "global_counter;GlobalCounter")
+        list(GET pair 0 name)
+        list(GET pair 1 entry)
+        lutils_add_shader(lutils_${name} NAME ${name} SOURCE compute/workgroup.hpp ENTRY group_test::${entry})
+        target_link_libraries(workgroup_tests PRIVATE lutils_${name})
+    endforeach()
+    add_test(NAME compute.workgroup.cpu COMMAND workgroup_tests)
+    set_tests_properties(compute.workgroup.cpu PROPERTIES TIMEOUT 30)
+    if(LUTILS_ENABLE_VULKAN)
+        target_link_libraries(workgroup_tests PRIVATE lutils::compute_vulkan)
+        target_compile_definitions(workgroup_tests PRIVATE LUTILS_TEST_VULKAN)
+        add_test(NAME compute.workgroup.vulkan COMMAND workgroup_tests vulkan)
+        set_tests_properties(compute.workgroup.vulkan PROPERTIES TIMEOUT 30)
+    endif()
+    set(group_patterns "top-level statement" "cannot return early" "top-level statement" "buffer or shared lvalues" "nested mutation" "nested mutation")
+    foreach(case RANGE 1 6)
+        math(EXPR index "${case} - 1")
+        list(GET group_patterns ${index} pattern)
+        add_test(NAME shader.group.reject.${case} COMMAND ${CMAKE_COMMAND}
+            -DTOOL=$<TARGET_FILE:lutils-kernelc> -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compute/reject_group.hpp
+            -DINCLUDE_DIR=${LUTILS_KERNEL_INCLUDE_DIR} -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/group_rejected_${case}
+            -DENTRY=group_reject::Kernel -DCASE=${case} "-DPATTERN=${pattern}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/reject.cmake)
+    endforeach()
+endif()
+
+if(LUTILS_BUILD_KERNELC)
     target_link_libraries(shader_tests PRIVATE lutils_camera_rays)
     target_link_libraries(shader_tests PRIVATE lutils_sphere_tracer)
     target_link_libraries(shader_tests PRIVATE lutils_visualize_rays)
@@ -113,7 +174,7 @@ if(LUTILS_BUILD_KERNELC)
     lutils_add_shader(lutils_layout NAME layout SOURCE compute/layout_kernel.hpp ENTRY layout_test::Layout)
     target_link_libraries(shader_tests PRIVATE lutils_layout)
     set(image_formats
-        R8 RG8 RGBA8 R8Snorm RG8Snorm RGBA8Snorm R8UI RG8UI RGBA8UI R8I RG8I RGBA8I R16 RG16 RGBA16 R16Snorm RG16Snorm RGBA16Snorm R16UI RG16UI RGBA16UI R16I RG16I RGBA16I R32UI RG32UI RGBA32UI R32I RG32I RGBA32I R32F RG32F RGBA32F)
+        R8 RG8 RGBA8 R8Snorm RG8Snorm RGBA8Snorm R8UI RG8UI RGBA8UI R8I RG8I RGBA8I R16 RG16 RGBA16 R16Snorm RG16Snorm RGBA16Snorm R16UI RG16UI RGBA16UI R16I RG16I RGBA16I R32UI RG32UI RGBA32UI R32I RG32I RGBA32I R32F RG32F RGBA32F R16F RG16F RGBA16F)
     foreach(format IN LISTS image_formats)
         lutils_add_shader(lutils_format_${format} NAME format_${format}
             SOURCE compute/formats.hpp ENTRY format_test::Copy${format})
@@ -124,6 +185,22 @@ endif()
 add_executable(shader_value_tests compute/values.cpp)
 target_link_libraries(shader_value_tests PRIVATE lutils::compute_cpu lutils_development)
 add_test(NAME shader.values COMMAND shader_value_tests)
+add_executable(half_value_tests compute/half_values.cpp)
+target_link_libraries(half_value_tests PRIVATE lutils::compute_kernel lutils_development)
+add_test(NAME shader.half.values COMMAND half_value_tests)
+if(LUTILS_BUILD_KERNELC)
+    lutils_add_shader(lutils_half_arithmetic NAME half_arithmetic SOURCE compute/half_kernel.hpp ENTRY half_test::Arithmetic)
+    lutils_add_shader(lutils_half_shared NAME half_shared SOURCE compute/half_kernel.hpp ENTRY half_test::Shared)
+    add_executable(half_tests compute/half.cpp)
+    target_link_libraries(half_tests PRIVATE lutils_half_arithmetic lutils_half_shared lutils::compute_cpu lutils_development)
+    add_test(NAME shader.half.cpu COMMAND half_tests)
+    if(LUTILS_ENABLE_VULKAN)
+        target_link_libraries(half_tests PRIVATE lutils::compute_vulkan)
+        target_compile_definitions(half_tests PRIVATE LUTILS_TEST_VULKAN)
+        add_test(NAME shader.half.vulkan COMMAND half_tests vulkan)
+        set_tests_properties(shader.half.vulkan PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
 if(LUTILS_BUILD_KERNELC)
     set(shader_rejection_patterns "custom overloaded" "aggregates" "side effects" "positive bounded"
         "dynamic allocation" "uniforms are read only" "builtins are read only" "arrays are read only"

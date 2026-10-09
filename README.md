@@ -63,7 +63,8 @@ ctest --preset debug
 ./build/debug/examples/erasure_counter
 ```
 
-另有 `release`、`clang-sanitize` 预设，分别验证优化构建和 AddressSanitizer／UBSan。若运行环境不支持 LeakSanitizer，可用 `ASAN_OPTIONS=detect_leaks=0 ctest --preset clang-sanitize` 单独关闭泄漏检测。
+预设分工与安装方式见 [SDK 接入](docs/sdk.md)。`clang-sanitize` / `compute-sanitize` 使用 ASan、UBSan，
+`cpu-tsan` 检查线程池与工作组同步。sanitizer 构建用于验证，安装包使用 `sdk-release`。
 
 作为 CMake 子项目使用：
 
@@ -90,7 +91,7 @@ C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考�
 
 基础图像和 CPU 运行时随默认构建启用。构建内核工具与图像算法需要匹配的
 Clang/LLVM 18 开发文件、`glslangValidator`、`spirv-val`；Vulkan 后端另需 Vulkan
-开发文件、loader 和可用设备驱动。Ubuntu 对应包为 `libclang-18-dev`、`llvm-18-dev`、
+开发文件、loader 和可用设备驱动。Ubuntu 对应包为 `libclang-18-dev`、`libclang-cpp18-dev`、`llvm-18-dev`、
 `glslang-tools`、`spirv-tools`、`libvulkan-dev`。
 
 ```sh
@@ -182,42 +183,20 @@ ctest --preset compute-release
 用 maxCachedStagingBytes 限制空闲 staging 缓存。`--host-cached` 对应 host-visible storage
 的缓存偏好，收益依赖硬件和访问方式。
 
-RTX 5070 Ti 的当前实测：单帧中位延迟 1.665 ms；两帧流水线完整吞吐 660 帧/秒，
-其中包括主机打包、传输和解包。测量边界与两种配置的延迟取舍见
-[流水线报告](docs/gpu-pipeline-benchmark.md)；[前一阶段报告](docs/gpu-benchmark.md)保留历史基线。
+当前优化与对照数据见 [性能报告](docs/compute-performance.md)。历史阶段数据保留在
+[流水线报告](docs/gpu-pipeline-benchmark.md) 和 [初始基准](docs/gpu-benchmark.md)。
 
-### 编写内核
+### 编写内核与计算能力
 
-内核是普通 C++17 函数，入口使用 `Invocation`、一个或多个只读/只写 word buffer，
-以及扁平的 32 位参数结构。示例见 [add_kernel.cpp](tests/compute/add_kernel.cpp)。
+新内核使用上述类接口和 `lutils_add_shader`。支持标量、向量、结构体、数组、Uniform、
+D1/D2/D3 原生图像，以及 `SharedArray`、`barrier()`、32 位原子操作和 FP16。
+完整约定及示例见 [计算能力](docs/compute-capabilities.md)。普通类内核允许尾部工作项；
+使用共享内存或屏障时必须提交完整工作组。
 
-```cmake
-lutils_add_kernel(my_kernel
-    NAME my_add
-    SOURCE kernels/add.cpp
-    ENTRY my_app::add
-    LOCAL_SIZE_X 32
-    INCLUDE_DIRS include
-    DEFINITIONS MY_KERNEL_OPTION=1)
-target_link_libraries(my_app PRIVATE my_kernel lutils::compute_cpu)
-```
+原有函数入口 `lutils_add_kernel` 继续支持 `Invocation`、word buffer 和扁平参数，
+X 工作组由 `LOCAL_SIZE_X` 指定，Y/Z=1，dispatch 范围必须整除工作组。
+[旧入口示例](tests/compute/add_kernel.cpp) 用于兼容性验证；它不提供类接口的类型化资源和组内同步。
 
-生成 `my_add.hpp`、独立 CPU 包装、GLSL、SPIR-V；头文件提供
-`lutils::generated::my_add()` 和 `pack_my_add(my_addParams const&)`。
-CPU 包装独立编译，消费目标的宏不会重新解释算法。影响算法语义的宏请通过
-`DEFINITIONS` 传入；目录/目标定义、配置宏（如 `NDEBUG`）和常规 `-D`/`-U` 同步到 Shader 编译。
-使用 Ninja 等单配置生成器；语言条件宏表达式、强制包含等不支持的设置会报错。
-内核不能根据编译器或平台内建宏改变算法行为。
-被多个内核入口共享的源文件中，函数定义使用 `inline` 或内部链接。
-工具会追踪传递头文件依赖，同时更新 CPU 包装和 Shader。
-
-当前支持标量运算、普通标量辅助函数、分支、for/while 循环；参数最多 128 字节，
-工作组 X 通过 `LOCAL_SIZE_X` 指定，缺省为 1，Y/Z 固定为 1。图像算子默认 X=32，
-可用 `LUTILS_IMAGE_LOCAL_SIZE_X` 调整。dispatch extent 表示实际工作项数量，必须整除
-工作组大小；图像层向上补齐 X，内核检查真实尺寸并跳过尾部。
-资源以 32 位 word 访问，写入者必须独占整个 word。
-未知语法、递归、动态分配、嵌套修改表达式等在生成阶段拒绝。
-
-Vulkan 已支持 host-visible/device-local storage、staging、执行槽复用和单队列异步提交；
-已验证 CPU、软件 Vulkan 和 RTX 5070 Ti。Windows、其他硬件、多队列传输重叠、
-向量/数组内核、共享内存和原子操作仍待扩展。
+Linux CI 包含基础 GCC/Clang、完整计算、sanitizer、下游工程、安装迁移和 TGZ 接入测试。
+安装包按需提供 `vulkan`、`image_ops`、`kernelc` 组件，步骤见 [SDK 接入](docs/sdk.md)。
+Windows、Cube/Array image 和多队列传输尚未提供。

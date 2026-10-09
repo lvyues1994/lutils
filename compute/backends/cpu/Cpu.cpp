@@ -9,10 +9,14 @@ struct CpuBufferImpl final : Buffer {
     CpuBufferImpl(std::shared_ptr<Identity> device, std::size_t count)
         : identity(std::move(device)), words(count) {}
     std::size_t wordCount() const noexcept override { return words.size(); }
+    std::size_t byteCount() const noexcept override {
+        return logicalBytes ? logicalBytes : words.size() * 4;
+    }
     std::optional<ImageDesc> imageDescription() const override { return image; }
     std::shared_ptr<Identity> identity;
     std::vector<Word> words;
     std::optional<ImageDesc> image;
+    std::size_t logicalBytes = 0;
 };
 struct CpuKernelImpl final : Kernel {
     CpuKernelImpl(std::shared_ptr<Identity> device, KernelSource source)
@@ -35,13 +39,25 @@ struct CpuCompletion final : Completion {
 };
 struct CpuDeviceImpl final : Device {
     std::shared_ptr<Identity> identity = std::make_shared<Identity>();
+    std::unique_ptr<CpuExecution> execution;
+    explicit CpuDeviceImpl(std::unique_ptr<CpuExecution> e) : execution(std::move(e)) {}
     DeviceInfo info() const override {
-        return {"C++17 reference CPU", true, std::numeric_limits<std::size_t>::max()};
+        return {"C++17 CPU",
+                true,
+                std::numeric_limits<std::size_t>::max(),
+                {true, true, true, 1024, 65536}};
     }
     Result<BufferHandle> createBuffer(std::size_t words) override {
         if (words > std::numeric_limits<Word>::max())
             return Error{ErrorCode::Overflow, "buffer exceeds 32-bit kernel indexing"};
         return BufferHandle{std::make_shared<CpuBufferImpl>(identity, words)};
+    }
+    Result<BufferHandle> createBufferBytes(std::size_t bytes) override {
+        if (bytes > std::size_t{UINT32_MAX} * 4)
+            return Error{ErrorCode::Overflow, "buffer exceeds 32-bit kernel indexing"};
+        auto result = std::make_shared<CpuBufferImpl>(identity, (bytes + 3) / 4);
+        result->logicalBytes = bytes;
+        return BufferHandle{std::move(result)};
     }
     Result<KernelHandle> createKernel(KernelSource source) override {
         auto status = validate(source);
@@ -49,6 +65,10 @@ struct CpuDeviceImpl final : Device {
             return status.error();
         if (!source.cpu && !source.cpuDispatch)
             return Error{ErrorCode::Unsupported, "kernel has no CPU entry"};
+        if (source.sharedMemoryBytes > 65536 || source.localSize.x > 1024 ||
+            source.localSize.y > 1024 || source.localSize.z > 1024 ||
+            std::uint64_t{source.localSize.x} * source.localSize.y * source.localSize.z > 1024)
+            return Error{ErrorCode::Unsupported, "kernel exceeds CPU workgroup limits"};
         return KernelHandle{std::make_shared<CpuKernelImpl>(identity, std::move(source))};
     }
     Result<BufferHandle> createImage(ImageDesc const &desc) override {
@@ -113,10 +133,10 @@ struct CpuDeviceImpl final : Device {
         std::vector<CpuBuffer> buffers;
         for (auto const &b : d.buffers) {
             auto &words = get(b)->words;
-            buffers.push_back({words.data(), words.size(), b->imageDescription()});
+            buffers.push_back({words.data(), words.size(), b->imageDescription(), b->byteCount()});
         }
         if (d.kernel->source().cpuDispatch) {
-            d.kernel->source().cpuDispatch(d.extent, buffers, d.parameters);
+            d.kernel->source().cpuDispatch(d.extent, buffers, d.parameters, *execution);
             return;
         }
         for (Word z = 0; z < d.extent.z; ++z)
@@ -135,12 +155,19 @@ struct CpuDeviceImpl final : Device {
                 std::visit([&](auto const &c) { execute(c, *completion); }, command);
         } catch (std::out_of_range const &error) {
             return Error{ErrorCode::Bounds, error.what()};
+        } catch (std::exception const &error) {
+            return Error{ErrorCode::Device, error.what()};
+        } catch (...) {
+            return Error{ErrorCode::Device, "CPU kernel raised an unknown exception"};
         }
         return std::shared_ptr<Completion>{std::move(completion)};
     }
 };
 } // namespace
-Result<std::unique_ptr<Device>> createCpuDevice() {
-    return std::unique_ptr<Device>{std::make_unique<CpuDeviceImpl>()};
+Result<std::unique_ptr<Device>> createCpuDevice(CpuOptions options) {
+    auto execution = createCpuExecution(options);
+    if (!execution)
+        return execution.error();
+    return std::unique_ptr<Device>{std::make_unique<CpuDeviceImpl>(std::move(execution).value())};
 }
 } // namespace lutils::compute

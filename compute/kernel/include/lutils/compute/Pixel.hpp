@@ -30,7 +30,7 @@ template <class T> struct ChannelValue<T, NumberKind::SNorm> {
     using Type = float;
 };
 template <class T> T saturated(double value) {
-    if constexpr (std::is_floating_point_v<T>) {
+    if constexpr (isShaderFloat<T>) {
         return static_cast<T>(value);
     } else {
         if (std::isnan(value))
@@ -82,15 +82,15 @@ template <class T, ChannelOrder O, NumberKind K> struct Pixel {
         : data{ChannelEncoding<T, K>::encode(static_cast<ChannelType<Channel::R>>(values))...} {}
     template <Channel C> ChannelType<C> get() const {
         if constexpr (C == Channel::Min)
-            return 0;
+            return ChannelType<C>{0};
         else if constexpr (C == Channel::Max)
-            return 1;
+            return ChannelType<C>{1};
         else {
             constexpr auto i = channelIndex(O, C);
             if constexpr (i < channelCount(O))
                 return ChannelEncoding<T, K>::decode(data[i]);
             else
-                return C == Channel::A ? 1 : 0;
+                return ChannelType<C>{C == Channel::A ? 1 : 0};
         }
     }
     template <Channel C> void set(ChannelType<C> value) {
@@ -117,10 +117,11 @@ struct IsPixel : std::conjunction<IsChannel<P, Channel::R>, IsChannel<P, Channel
                                   IsChannel<P, Channel::B>, IsChannel<P, Channel::A>> {};
 template <class Src, class Dst> struct ChannelConverter {
     static Dst apply(Src value) {
-        if constexpr (std::is_integral_v<Src> && std::is_floating_point_v<Dst>)
-            return std::max(Dst{-1}, static_cast<Dst>(value) /
-                                         static_cast<Dst>(std::numeric_limits<Src>::max()));
-        else if constexpr (std::is_floating_point_v<Src> && std::is_integral_v<Dst>)
+        if constexpr (std::is_integral_v<Src> && isShaderFloat<Dst>)
+            return static_cast<Dst>(
+                std::max(-1.0, static_cast<double>(value) /
+                                   static_cast<double>(std::numeric_limits<Src>::max())));
+        else if constexpr (isShaderFloat<Src> && std::is_integral_v<Dst>)
             return saturated<Dst>(std::round(static_cast<double>(value) *
                                              static_cast<double>(std::numeric_limits<Dst>::max())));
         else
@@ -179,7 +180,8 @@ namespace cpu {
     using NAME##16UI = Pixel<std::uint16_t, ChannelOrder::ORDER, NumberKind::UInt>;                \
     using NAME##16I = Pixel<std::int16_t, ChannelOrder::ORDER, NumberKind::SInt>;                  \
     using NAME##16Snorm = Pixel<std::int16_t, ChannelOrder::ORDER, NumberKind::SNorm>;             \
-    using NAME##32F = Pixel<float, ChannelOrder::ORDER, NumberKind::Float>;
+    using NAME##32F = Pixel<float, ChannelOrder::ORDER, NumberKind::Float>;                        \
+    using NAME##16F = Pixel<half, ChannelOrder::ORDER, NumberKind::Float>;
 LUTILS_PIXEL_ALIASES(R, R)
 LUTILS_PIXEL_ALIASES(RG, RG)
 LUTILS_PIXEL_ALIASES(RGB, RGB)
@@ -225,7 +227,10 @@ using RGB10A2 = PackedPixel<10, 10, 10, 2>;
     X(RGBA32I, rgba32i, std::int32_t, SInt, 4, R32G32B32A32_SINT) \
     X(R32F, r32f, float, Float, 1, R32_SFLOAT) \
     X(RG32F, rg32f, float, Float, 2, R32G32_SFLOAT) \
-    X(RGBA32F, rgba32f, float, Float, 4, R32G32B32A32_SFLOAT)
+    X(RGBA32F, rgba32f, float, Float, 4, R32G32B32A32_SFLOAT) \
+    X(R16F, r16f, half, Float, 1, R16_SFLOAT) \
+    X(RG16F, rg16f, half, Float, 2, R16G16_SFLOAT) \
+    X(RGBA16F, rgba16f, half, Float, 4, R16G16B16A16_SFLOAT)
 // clang-format on
 enum class ImageFormat {
 #define LUTILS_ENUM(N, G, T, K, C, V) N,

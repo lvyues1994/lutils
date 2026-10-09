@@ -12,12 +12,13 @@
 | 38–41 | 向量、swizzle、数学函数、结构体、uniform | CameraRays → SphereTracer → VisualizeRays；CPU/GPU 图像差分 |
 | 44–52 | D1/D2/D3、imageLoad/imageStore/imageSize | Vulkan 原生 storage image；一维、二维、三维运行测试 |
 | 53–62 | Pixel 协议、通道重排/补值、数值和位打包 | C++17 traits、混合通道类型、BGRA、RGB565、RGB10A2 |
-| 58–62 | 内外像素格式转换 | 33 种内部格式的 CPU/GPU load/store 往返 |
+| 58–62 | 内外像素格式转换 | 36 种内部格式的 CPU/GPU load/store 往返 |
 | 63–66 | 成员数组、循环、布尔转换、ping-pong | Game of Life 四代与独立 blinker 参考 |
 | 7–8、25–28 | CMake、Clang、GLSL/SPIR-V 校验 | 公共预处理配置、源码位置诊断、不支持语法的拒绝测试 |
 
 模块分工：
 
+- `Half.hpp` / `Workgroup.hpp`：binary16、共享数组、屏障和原子操作。
 - `Math.hpp`：标量别名、2/3/4 分量向量、读 swizzle、数学函数、调用坐标。
 - `Pixel.hpp`：通道协议、数值转换、外部像素预设、内部格式与字节 codec。
 - `Shader.hpp`：内核标记、BufferBinding、ImageBinding、Uniform、维度模型。
@@ -88,13 +89,14 @@ Buffer、Image、Uniform 各自拥有独立的逻辑 slot 空间，允许跨种�
 生成器把资源按声明顺序映射为不同的 Vulkan descriptor binding，Uniform 映射为 push constant 偏移。
 同种资源的重复 slot 被拒绝；同次 dispatch 的可写绑定不能别名。
 
-execute 的范围是工作项数量。Vulkan 向上取工作组数，生成的入口先检查实际范围；CPU 只执行实际范围。
+execute 的范围是工作项数量。普通内核由 Vulkan 向上取工作组数，入口检查实际范围；CPU 只执行实际范围。
+共享内存和屏障内核要求完整工作组，规则见 [计算能力](compute-capabilities.md)。
 工作组坐标和数量在两端一致。图像算法仍需自行处理邻域边界；GPU 不提供 CPU 越界异常。
 同一 Device 及其 Completion 的操作由调用方串行化。
 
 ## 类型、布局与像素
 
-支持 bool、int32、uint32、float，及设备支持时的 double；向量有 2/3/4 个分量。
+支持 bool、int32、uint32、half、float，及设备支持时的 double；向量有 2/3/4 个分量。
 读 swizzle 使用 `v["xy"_sw]`，用目标向量接收；单分量可转换为标量。分量数不匹配会报错。
 支持 dot、cross、length、normalize、reflect、min/max/clamp、sqrt、abs、pow、floor/ceil、sin/cos。
 
@@ -109,8 +111,8 @@ kernel 是无用户构造/析构和继承的聚合。成员数组必须有常量
 
 Pixel 协议是 `ChannelType<C>`、`get<C>()`、`set<C>()`，允许各通道使用不同类型。
 C++17 detection traits 代替 Concepts。预设覆盖 R/RG/RGB/BGR/RGBA/BGRA 的
-8/16 位整数、UNorm、SNorm，以及 32 位浮点。内部 storage image 覆盖 R/RG/RGBA：
-8/16 位 UNorm、SNorm、UInt、SInt，32 位 UInt、SInt、Float，共 33 种。
+8/16 位整数、UNorm、SNorm，以及 16/32 位浮点。内部 storage image 覆盖 R/RG/RGBA：
+8/16 位 UNorm、SNorm、UInt、SInt，32 位 UInt、SInt、Float，另有 16 位 Float，共 36 种。
 
 通道按语义重排，缺失通道补 `(0,0,0,1)`。整数外部通道转浮点或 normalized 内部格式时归一化；
 反向转换按外部通道范围量化，可通过 ChannelConverter 定制。显式整数内部格式使用数值饱和转换。
@@ -127,12 +129,15 @@ PackedPixel 的通道位从最低位按 R、G、B、A 排列，RGB565 使用 16 
 Clang 前端支持示例用到的局部值、分支、for/while、普通辅助函数和显式数值转换。
 明确拒绝指针/引用值、动态分配、递归、虚调用、任意 STL、零长/嵌套数组、64 位整数运算，
 以及不能保持 C++ 求值顺序的嵌套修改。用户自定义运算符不被当作 GLSL 内建运算符替换。
-每个工作项必须独占写入位置；目前没有共享内存、原子或组内屏障。
+普通写入必须独占对应存储位置；共享访问使用显式同步或原子操作，详见 [计算能力](compute-capabilities.md)。
 
 第 44 页 Cube/Array 等是 GLSL API 背景；第 67 页 float16、dimensional spans 和 reflection
-是作者的未来工作。本次对齐已展示的功能，不包含这些扩展。Windows 尚未验证。
+是作者的未来工作。当前已扩展 FP16；dimensional spans、reflection 和 Windows 尚未提供。
 
 ## 验证记录
+
+本节保留 2026-10-08 的历史验收。0.2 的新能力、SDK 和自动化验证见
+[计算能力](compute-capabilities.md)、[SDK 接入](sdk.md) 及 [性能报告](compute-performance.md)。
 
 2026-10-08，在 Linux、GCC 13.3 / Clang 18、RTX 5070 Ti（驱动 595.91.07）上完成复验：
 

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <lutils/compute/Half.hpp>
 #include <stdexcept>
 #include <type_traits>
 
@@ -164,7 +165,12 @@ template <class T, std::size_t N> constexpr T dot(Vec<T, N> const &a, Vec<T, N> 
 template <class T> constexpr Vec<T, 3> cross(Vec<T, 3> const &a, Vec<T, 3> const &b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
-template <class T, std::size_t N> T length(Vec<T, N> const &a) { return std::sqrt(dot(a, a)); }
+template <class T, std::size_t N> T length(Vec<T, N> const &a) {
+    if constexpr (std::is_same_v<T, half>)
+        return half(std::sqrt(static_cast<float>(dot(a, a))));
+    else
+        return std::sqrt(dot(a, a));
+}
 template <class T, std::size_t N> Vec<T, N> normalize(Vec<T, N> const &a) { return a / length(a); }
 template <class T, std::size_t N> Vec<T, N> reflect(Vec<T, N> const &a, Vec<T, N> const &n) {
     return a - T{2} * dot(n, a) * n;
@@ -198,6 +204,18 @@ template <class T> T floor(T a) { return std::floor(a); }
 template <class T> T ceil(T a) { return std::ceil(a); }
 template <class T> T sin(T a) { return std::sin(a); }
 template <class T> T cos(T a) { return std::cos(a); }
+#define LUTILS_HALF_MATH(NAME)                                                                     \
+    inline half NAME(half a) { return half(std::NAME(static_cast<float>(a))); }
+LUTILS_HALF_MATH(sqrt)
+LUTILS_HALF_MATH(abs)
+LUTILS_HALF_MATH(floor)
+LUTILS_HALF_MATH(ceil)
+LUTILS_HALF_MATH(sin)
+LUTILS_HALF_MATH(cos)
+#undef LUTILS_HALF_MATH
+inline half pow(half a, half b) {
+    return half(std::pow(static_cast<float>(a), static_cast<float>(b)));
+}
 #define LUTILS_VECTOR_MATH(NAME)                                                                   \
     template <class T, std::size_t N> Vec<T, N> NAME(Vec<T, N> a) {                                \
         for (std::size_t i = 0; i < N; ++i)                                                        \
@@ -228,6 +246,9 @@ using uvec4 = Vec<uint, 4>;
 using dvec2 = Vec<double, 2>;
 using dvec3 = Vec<double, 3>;
 using dvec4 = Vec<double, 4>;
+using f16vec2 = Vec<half, 2>;
+using f16vec3 = Vec<half, 3>;
+using f16vec4 = Vec<half, 4>;
 inline thread_local uvec3 gl_GlobalInvocationID{};
 inline thread_local uvec3 gl_LocalInvocationID{};
 inline thread_local uvec3 gl_WorkGroupID{};

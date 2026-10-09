@@ -79,6 +79,13 @@ void resourceContracts() {
     invalid.abiVersion = 2;
     invalid.bindings = {Access::Write};
     check(!validate(invalid));
+    invalid.parameterWords = 4;
+    invalid.resources.push_back({});
+    invalid.localSize = {Word{1} << 31, Word{1} << 31, 4};
+    invalid.cpu = +[](kernel::Invocation, std::vector<CpuBuffer> const &,
+                      std::vector<Word> const &) {};
+    auto oversized = backend.device().createKernel(invalid);
+    check(!oversized && oversized.error().code == lutils::ErrorCode::Unsupported);
     Backend failing{std::make_unique<FailingUpload>()};
     BufferResource<int> ints{1};
     ints[0] = 9;

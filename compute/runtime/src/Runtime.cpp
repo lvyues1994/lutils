@@ -86,7 +86,10 @@ Result<void> CommandList::dispatch(Dispatch command) {
                 info->image->dimensions != image->dimensions)
                 return Error{ErrorCode::InvalidArgument,
                              "image binding format or dimension mismatch"};
-        } else if (info && (info->image || command.buffers[i]->wordCount() % info->elementWords)) {
+        } else if (info &&
+                   (info->image ||
+                    (info->elementBytes ? command.buffers[i]->byteCount() % info->elementBytes
+                                        : command.buffers[i]->wordCount() % info->elementWords))) {
             return Error{ErrorCode::InvalidArgument, "buffer binding kind or stride mismatch"};
         }
         for (std::size_t j = 0; j < i; ++j) {
@@ -97,9 +100,10 @@ Result<void> CommandList::dispatch(Dispatch command) {
     }
     auto aligned = [](Word extent, Word local) { return extent % local == 0; };
     // Exact grids avoid executing extra invocations outside the CPU domain.
-    if (source.abiVersion == 1 && (!aligned(command.extent.x, source.localSize.x) ||
-                                   !aligned(command.extent.y, source.localSize.y) ||
-                                   !aligned(command.extent.z, source.localSize.z)))
+    if ((source.abiVersion == 1 || source.requiresFullWorkgroups) &&
+        (!aligned(command.extent.x, source.localSize.x) ||
+         !aligned(command.extent.y, source.localSize.y) ||
+         !aligned(command.extent.z, source.localSize.z)))
         return Error{ErrorCode::InvalidArgument, "dispatch extent must be divisible by local size"};
     if (source.abiVersion == 2 &&
         (command.parameters.size() < 4 || command.parameters[0] != command.extent.x ||

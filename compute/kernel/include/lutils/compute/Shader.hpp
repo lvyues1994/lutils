@@ -2,6 +2,7 @@
 #include <array>
 #include <limits>
 #include <lutils/compute/Pixel.hpp>
+#include <lutils/compute/Workgroup.hpp>
 #include <vector>
 
 #if defined(__clang__)

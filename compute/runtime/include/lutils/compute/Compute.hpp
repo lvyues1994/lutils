@@ -6,60 +6,72 @@
 #include <utility>
 
 namespace lutils::compute {
-// std430 codecs use word offsets, independent of native object padding.
+// std430 byte layouts are independent of native object padding.
+inline unsigned char *storageBytes(void *p) { return static_cast<unsigned char *>(p); }
+inline unsigned char const *storageBytes(void const *p) {
+    return static_cast<unsigned char const *>(p);
+}
+constexpr std::size_t alignedBytes(std::size_t size, std::size_t alignment) {
+    return (size + alignment - 1) / alignment * alignment;
+}
+constexpr std::size_t alignedWords(std::size_t size, std::size_t alignment) {
+    return alignedBytes(size, alignment);
+}
 template <class T, class = void> struct StorageCodec;
 template <class T>
-struct StorageCodec<T, std::enable_if_t<std::is_arithmetic_v<T> && !std::is_same_v<T, bool> &&
-                                        (sizeof(T) == 4 || sizeof(T) == 8)>> {
-    static constexpr std::size_t words = sizeof(T) / 4;
-    static constexpr std::size_t alignment = words;
-    static T read(Word const *data) {
+struct StorageCodec<T, std::enable_if_t<(std::is_arithmetic_v<T> && !std::is_same_v<T, bool> &&
+                                         (sizeof(T) == 4 || sizeof(T) == 8)) ||
+                                        std::is_same_v<T, kernel::half>>> {
+    static constexpr std::size_t bytes = sizeof(T), alignmentBytes = bytes;
+    static constexpr std::size_t words = (bytes + 3) / 4, alignment = (alignmentBytes + 3) / 4;
+    static T read(void const *data) {
         T value;
         std::memcpy(&value, data, sizeof(T));
         return value;
     }
-    static void write(Word *data, T value) { std::memcpy(data, &value, sizeof(T)); }
+    static void write(void *data, T value) { std::memcpy(data, &value, sizeof(T)); }
 };
 template <> struct StorageCodec<bool> {
-    static constexpr std::size_t words = 1, alignment = 1;
-    static bool read(Word const *p) { return *p != 0; }
-    static void write(Word *p, bool v) { *p = static_cast<Word>(v); }
+    static constexpr std::size_t bytes = 4, alignmentBytes = 4, words = 1, alignment = 1;
+    static bool read(void const *p) { return StorageCodec<Word>::read(p) != 0; }
+    static void write(void *p, bool v) { StorageCodec<Word>::write(p, static_cast<Word>(v)); }
 };
-constexpr std::size_t alignedWords(std::size_t size, std::size_t alignment) {
-    return (size + alignment - 1) / alignment * alignment;
-}
 template <class T, std::size_t N> struct StorageCodec<kernel::Vec<T, N>> {
-    static constexpr std::size_t words = N * StorageCodec<T>::words;
-    static constexpr std::size_t alignment = (N == 2 ? 2 : 4) * StorageCodec<T>::alignment;
-    static kernel::Vec<T, N> read(Word const *data) {
+    static constexpr std::size_t bytes = N * StorageCodec<T>::bytes;
+    static constexpr std::size_t alignmentBytes =
+        (N == 2 ? 2 : 4) * StorageCodec<T>::alignmentBytes;
+    static constexpr std::size_t words = (bytes + 3) / 4, alignment = (alignmentBytes + 3) / 4;
+    static kernel::Vec<T, N> read(void const *data) {
         kernel::Vec<T, N> value;
         for (std::size_t i = 0; i < N; ++i)
-            value[i] = StorageCodec<T>::read(data + i * StorageCodec<T>::words);
+            value[i] = StorageCodec<T>::read(storageBytes(data) + i * StorageCodec<T>::bytes);
         return value;
     }
-    static void write(Word *data, kernel::Vec<T, N> const &v) {
+    static void write(void *data, kernel::Vec<T, N> const &v) {
         for (std::size_t i = 0; i < N; ++i)
-            StorageCodec<T>::write(data + i * StorageCodec<T>::words, v[i]);
+            StorageCodec<T>::write(storageBytes(data) + i * StorageCodec<T>::bytes, v[i]);
     }
 };
 template <class T, std::size_t N> struct StorageCodec<std::array<T, N>> {
     static_assert(N > 0, "shader arrays must have positive size");
-    static constexpr std::size_t alignment = StorageCodec<T>::alignment;
-    static constexpr std::size_t stride = alignedWords(StorageCodec<T>::words, alignment);
-    static constexpr std::size_t words = N * stride;
-    static std::array<T, N> read(Word const *data) {
+    static constexpr std::size_t alignmentBytes = StorageCodec<T>::alignmentBytes;
+    static constexpr std::size_t stride = alignedBytes(StorageCodec<T>::bytes, alignmentBytes);
+    static constexpr std::size_t bytes = N * stride;
+    static constexpr std::size_t words = (bytes + 3) / 4, alignment = (alignmentBytes + 3) / 4;
+    static std::array<T, N> read(void const *data) {
         std::array<T, N> out{};
         for (std::size_t i = 0; i < N; ++i)
-            out[i] = StorageCodec<T>::read(data + i * stride);
+            out[i] = StorageCodec<T>::read(storageBytes(data) + i * stride);
         return out;
     }
-    static void write(Word *data, std::array<T, N> const &v) {
+    static void write(void *data, std::array<T, N> const &v) {
         for (std::size_t i = 0; i < N; ++i)
-            StorageCodec<T>::write(data + i * stride, v[i]);
+            StorageCodec<T>::write(storageBytes(data) + i * stride, v[i]);
     }
 };
 template <class T> struct CpuStorage {
-    static constexpr auto stride = alignedWords(StorageCodec<T>::words, StorageCodec<T>::alignment);
+    static constexpr auto stride =
+        alignedBytes(StorageCodec<T>::bytes, StorageCodec<T>::alignmentBytes);
     CpuBuffer buffer;
     struct Values {
         std::unique_ptr<T[]> pointer;
@@ -69,18 +81,18 @@ template <class T> struct CpuStorage {
         std::size_t size() const { return count; }
         T &operator[](std::size_t i) { return pointer[i]; }
     } values;
-    explicit CpuStorage(CpuBuffer b) : buffer(b), values(b.size / stride) {
-        if (b.image || b.size % stride)
+    explicit CpuStorage(CpuBuffer b) : buffer(b), values(b.byteCount() / stride) {
+        if (b.image || b.byteCount() % stride)
             throw std::invalid_argument("typed buffer layout");
         for (std::size_t i = 0; i < values.size(); ++i)
-            values[i] = StorageCodec<T>::read(b.data + i * stride);
+            values[i] = StorageCodec<T>::read(storageBytes(b.data) + i * stride);
     }
     void flush() {
         for (std::size_t i = 0; i < values.size(); ++i)
-            StorageCodec<T>::write(buffer.data + i * stride, values[i]);
+            StorageCodec<T>::write(storageBytes(buffer.data) + i * stride, values[i]);
     }
 };
-// Word buffers already contain live Word objects; avoid a decode/copy for image pipelines.
+// Word buffers contain live Word objects; image pipelines need no decode or copy.
 template <> struct CpuStorage<Word> {
     struct View {
         Word *pointer;
@@ -88,8 +100,8 @@ template <> struct CpuStorage<Word> {
         Word *data() const { return pointer; }
         std::size_t size() const { return count; }
     } values;
-    explicit CpuStorage(CpuBuffer b) : values{b.data, b.size} {
-        if (b.image)
+    explicit CpuStorage(CpuBuffer b) : values{b.data, b.byteCount() / 4} {
+        if (b.image || b.byteCount() % 4)
             throw std::invalid_argument("expected word buffer");
     }
     void flush() {}
@@ -199,22 +211,67 @@ struct BuiltinScope {
         kernel::gl_LocalInvocationIndex = index;
     }
 };
-template <class K> void executeCpu(K &kernel, Extent3 extent, Extent3 local) {
-    BuiltinScope scope;
+inline void setGrid(Extent3 extent, Extent3 local) {
     kernel::gl_WorkGroupSize = {local.x, local.y, local.z};
     kernel::gl_NumWorkGroups = {extent.x / local.x + (extent.x % local.x != 0),
                                 extent.y / local.y + (extent.y % local.y != 0),
                                 extent.z / local.z + (extent.z % local.z != 0)};
-    for (Word z = 0; z < extent.z; ++z)
-        for (Word y = 0; y < extent.y; ++y)
-            for (Word x = 0; x < extent.x; ++x) {
-                kernel::gl_GlobalInvocationID = {x, y, z};
-                kernel::gl_LocalInvocationID = {x % local.x, y % local.y, z % local.z};
-                kernel::gl_WorkGroupID = {x / local.x, y / local.y, z / local.z};
-                kernel::gl_LocalInvocationIndex =
-                    (z % local.z * local.y + y % local.y) * local.x + x % local.x;
-                kernel.main();
-            }
+}
+inline void setInvocation(Extent3 local, Word x, Word y, Word z) {
+    kernel::gl_GlobalInvocationID = {x, y, z};
+    kernel::gl_LocalInvocationID = {x % local.x, y % local.y, z % local.z};
+    kernel::gl_WorkGroupID = {x / local.x, y / local.y, z / local.z};
+    kernel::gl_LocalInvocationIndex = (z % local.z * local.y + y % local.y) * local.x + x % local.x;
+}
+template <Word LocalX, Word LocalY, Word LocalZ, class K>
+void executeCpu(K const &value, Extent3 extent, CpuExecution &execution, bool grouped = false) {
+    static_assert(LocalX > 0 && LocalY > 0 && LocalZ > 0, "local size must be positive");
+    constexpr Extent3 local{LocalX, LocalY, LocalZ};
+    if (!extent.x || !extent.y || !extent.z)
+        return;
+    if (std::size_t{extent.x} > SIZE_MAX / extent.y / extent.z)
+        throw std::overflow_error("CPU dispatch size");
+    if (grouped) {
+        if (extent.x % local.x || extent.y % local.y || extent.z % local.z)
+            throw std::invalid_argument("shared kernels require complete workgroups");
+        execution.workgroup(std::size_t{local.x} * local.y * local.z, [&](std::size_t lane) {
+            BuiltinScope scope;
+            setGrid(extent, local);
+            auto k = value;
+            auto x = static_cast<Word>(lane % local.x);
+            auto y = static_cast<Word>(lane / local.x % local.y);
+            auto z = static_cast<Word>(lane / local.x / local.y);
+            for (Word gz = 0; gz < extent.z / local.z; ++gz)
+                for (Word gy = 0; gy < extent.y / local.y; ++gy)
+                    for (Word gx = 0; gx < extent.x / local.x; ++gx) {
+                        setInvocation(local, gx * local.x + x, gy * local.y + y, gz * local.z + z);
+                        k.main();
+                        // All lanes finish using shared storage before it is reused.
+                        kernel::barrier();
+                    }
+        });
+        return;
+    }
+    execution.parallelFor(std::size_t{extent.x} * extent.y * extent.z,
+                          [&](std::size_t begin, std::size_t end) {
+                              BuiltinScope scope;
+                              setGrid(extent, local);
+                              auto k = value;
+                              auto x = static_cast<Word>(begin % extent.x);
+                              auto y = static_cast<Word>(begin / extent.x % extent.y);
+                              auto z = static_cast<Word>(begin / extent.x / extent.y);
+                              for (auto i = begin; i < end; ++i) {
+                                  setInvocation(local, x, y, z);
+                                  k.main();
+                                  if (++x == extent.x) {
+                                      x = 0;
+                                      if (++y == extent.y) {
+                                          y = 0;
+                                          ++z;
+                                      }
+                                  }
+                              }
+                          });
 }
 // Owns one device and its resident copies. Kernels borrow host resources until recording.
 struct Backend {
@@ -231,13 +288,15 @@ struct Backend {
     template <class T, kernel::Dim D> Result<void> uploadBuffer(BufferResource<T, D> *resource) {
         if (!resource || !resource->identity())
             return Error{ErrorCode::InvalidArgument, "null resource"};
-        constexpr auto stride = alignedWords(StorageCodec<T>::words, StorageCodec<T>::alignment);
-        if (resource->size() > SIZE_MAX / stride)
+        constexpr auto stride =
+            alignedBytes(StorageCodec<T>::bytes, StorageCodec<T>::alignmentBytes);
+        if (resource->size() > (SIZE_MAX - 3) / stride)
             return Error{ErrorCode::Overflow, "typed buffer size"};
-        std::vector<Word> words(resource->size() * stride, 0);
+        auto bytes = resource->size() * stride;
+        std::vector<Word> words((bytes + 3) / 4, 0);
         for (std::size_t i = 0; i < resource->size(); ++i)
-            StorageCodec<T>::write(words.data() + i * stride, resource->data()[i]);
-        return upload(resource->identity(), {}, std::move(words));
+            StorageCodec<T>::write(storageBytes(words.data()) + i * stride, resource->data()[i]);
+        return upload(resource->identity(), {}, std::move(words), bytes);
     }
     template <kernel::ImageFormat G, class P, kernel::Dim D>
     Result<void> uploadImage(BufferResource<P, D> *resource) {
@@ -261,11 +320,13 @@ struct Backend {
         auto words = device_->download(handle.value());
         if (!words)
             return words.error();
-        constexpr auto stride = alignedWords(StorageCodec<T>::words, StorageCodec<T>::alignment);
-        if (words.value().size() != resource->size() * stride)
+        constexpr auto stride =
+            alignedBytes(StorageCodec<T>::bytes, StorageCodec<T>::alignmentBytes);
+        if (handle.value()->byteCount() != resource->size() * stride)
             return Error{ErrorCode::InvalidArgument, "resource size changed"};
         for (std::size_t i = 0; i < resource->size(); ++i)
-            resource->data()[i] = StorageCodec<T>::read(words.value().data() + i * stride);
+            resource->data()[i] =
+                StorageCodec<T>::read(storageBytes(words.value().data()) + i * stride);
         return {};
     }
     template <kernel::ImageFormat G, class P, kernel::Dim D>
@@ -346,7 +407,7 @@ struct Backend {
         return Error{ErrorCode::InvalidArgument, "resource has not been uploaded to this backend"};
     }
     Result<void> upload(std::shared_ptr<ResourceIdentity const> id, std::optional<ImageDesc> image,
-                        std::vector<Word> words) {
+                        std::vector<Word> words, std::size_t bytes = 0) {
         if (!id)
             return Error{ErrorCode::InvalidArgument, "moved-from resource"};
         resources_.erase(std::remove_if(resources_.begin(), resources_.end(),
@@ -354,7 +415,7 @@ struct Backend {
                          resources_.end());
         auto handle = find(id, image);
         if (!handle) {
-            handle = image ? device_->createImage(*image) : device_->createBuffer(words.size());
+            handle = image ? device_->createImage(*image) : device_->createBufferBytes(bytes);
             if (!handle)
                 return handle.error();
             auto uploaded = device_->upload(handle.value(), words);

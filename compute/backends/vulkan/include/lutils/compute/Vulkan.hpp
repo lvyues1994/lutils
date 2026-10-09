@@ -12,6 +12,7 @@ struct VulkanStatistics {
     std::atomic<std::uint64_t> submissionSlotsCreated{0};
     std::atomic<std::uint64_t> descriptorPoolsCreated{0};
     std::atomic<std::uint64_t> stagingBuffersCreated{0};
+    std::atomic<std::uint64_t> readbackVectorsCreated{0};
 };
 struct VulkanOptions {
     bool requireHardware = false;
@@ -27,6 +28,10 @@ struct VulkanOptions {
     // and caller-retained readback snapshots are outside this cache budget.
     std::size_t maxCachedStagingBytes = 64u * 1024u * 1024u;
     std::shared_ptr<VulkanStatistics> statistics = nullptr;
+    bool enableFloat16 = true;
+    // Host result storage, separate from native staging. A vector is reusable only
+    // after every completion and caller snapshot referring to it has been released.
+    std::size_t maxCachedReadbackBytes = 64u * 1024u * 1024u;
 };
 // Optional Vulkan diagnostics; the common Completion interface stays unchanged.
 struct VulkanCompletion : Completion {

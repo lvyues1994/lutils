@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <lutils/Result.hpp>
 #include <lutils/compute/Kernel.hpp>
 #include <lutils/compute/Pixel.hpp>
@@ -30,16 +31,28 @@ struct BindingInfo {
     std::uint32_t slot = 0;
     std::size_t elementWords = 1;
     std::optional<ImageDesc> image;
+    // Zero retains the ABI v1/v2 word stride; generated typed shaders set byte stride.
+    std::size_t elementBytes = 0;
 };
 Result<std::size_t> imageWordCount(ImageDesc const &desc);
 struct CpuBuffer {
     Word *data;
     std::size_t size;
     std::optional<ImageDesc> image = {};
+    std::size_t logicalBytes = 0;
+    std::size_t byteCount() const { return logicalBytes ? logicalBytes : size * sizeof(Word); }
 };
 using CpuEntry = void (*)(kernel::Invocation, std::vector<CpuBuffer> const &,
                           std::vector<Word> const &);
-using CpuDispatch = void (*)(Extent3, std::vector<CpuBuffer> const &, std::vector<Word> const &);
+struct CpuExecution {
+    virtual ~CpuExecution() = default;
+    // Calls finish before returning; exceptions are rethrown after joining all work.
+    virtual void parallelFor(std::size_t count,
+                             std::function<void(std::size_t, std::size_t)> const &) = 0;
+    virtual void workgroup(std::size_t lanes, std::function<void(std::size_t)> const &) = 0;
+};
+using CpuDispatch = void (*)(Extent3, std::vector<CpuBuffer> const &, std::vector<Word> const &,
+                             CpuExecution &);
 struct KernelSource {
     std::string name;
     std::vector<Access> bindings;
@@ -50,15 +63,26 @@ struct KernelSource {
     Word abiVersion = 1;
     std::vector<BindingInfo> resources;
     CpuDispatch cpuDispatch = nullptr;
+    std::size_t sharedMemoryBytes = 0;
+    bool requiresFullWorkgroups = false;
+};
+struct ComputeCapabilities {
+    bool float16 = false;
+    bool storageBuffer16 = false;
+    bool pushConstant16 = false;
+    std::size_t maxWorkgroupInvocations = 1;
+    std::size_t maxSharedMemoryBytes = 0;
 };
 struct DeviceInfo {
     std::string name;
     bool software = false;
     std::size_t maxBufferBytes = 0;
+    ComputeCapabilities capabilities{};
 };
 struct Buffer {
     virtual ~Buffer() = default;
     virtual std::size_t wordCount() const noexcept = 0;
+    virtual std::size_t byteCount() const noexcept { return wordCount() * sizeof(Word); }
     virtual std::optional<ImageDesc> imageDescription() const { return {}; }
 };
 struct Kernel {
@@ -122,6 +146,11 @@ struct Device {
     virtual ~Device() = default;
     virtual DeviceInfo info() const = 0;
     virtual Result<BufferHandle> createBuffer(std::size_t words) = 0;
+    virtual Result<BufferHandle> createBufferBytes(std::size_t bytes) {
+        if (bytes % sizeof(Word))
+            return Error{ErrorCode::Unsupported, "device requires whole-word buffer storage"};
+        return createBuffer(bytes / sizeof(Word));
+    }
     virtual Result<BufferHandle> createImage(ImageDesc const &) {
         return Error{ErrorCode::Unsupported, "device does not support images"};
     }
@@ -133,7 +162,13 @@ struct Device {
     virtual Result<std::shared_ptr<Completion>> submit(CommandList const &commands) = 0;
 };
 Result<void> validate(KernelSource const &source);
-Result<std::unique_ptr<Device>> createCpuDevice();
+struct CpuOptions {
+    // Zero selects up to eight hardware threads; one selects the serial reference path.
+    std::size_t workerCount = 0;
+    std::size_t parallelThreshold = 4096;
+};
+Result<std::unique_ptr<CpuExecution>> createCpuExecution(CpuOptions options = {});
+Result<std::unique_ptr<Device>> createCpuDevice(CpuOptions options = {});
 // Defined by the optional lutils::compute_vulkan target.
 Result<std::unique_ptr<Device>> createVulkanDevice();
 } // namespace lutils::compute

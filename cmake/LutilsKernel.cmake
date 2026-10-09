@@ -1,5 +1,3 @@
-find_program(LUTILS_GLSLANG glslangValidator REQUIRED)
-find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED)
 
 # CMake puts global flags after target definitions on the compiler command line.
 # Forward only macro flags, preserving that order without passing GCC options to Clang.
@@ -57,10 +55,17 @@ function(lutils_check_kernel_profile target)
 endfunction()
 
 function(_lutils_add_kernel_impl target kind)
+    find_program(LUTILS_GLSLANG glslangValidator REQUIRED)
+    find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED)
+    if(TARGET lutils::kernelc)
+        set(kernelc lutils::kernelc)
+    else()
+        set(kernelc lutils-kernelc)
+    endif()
     if(CMAKE_CONFIGURATION_TYPES)
         message(FATAL_ERROR "Kernel generation currently requires a single-configuration generator such as Ninja")
     endif()
-    cmake_parse_arguments(K "" "NAME;SOURCE;ENTRY;LOCAL_SIZE_X" "INCLUDE_DIRS;DEFINITIONS;DEPENDS" ${ARGN})
+    cmake_parse_arguments(K "OBJECT" "NAME;SOURCE;ENTRY;LOCAL_SIZE_X" "INCLUDE_DIRS;DEFINITIONS;DEPENDS" ${ARGN})
     if(K_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "Missing kernel argument values: ${K_KEYWORDS_MISSING_VALUES}")
     endif()
@@ -77,7 +82,11 @@ function(_lutils_add_kernel_impl target kind)
         message(FATAL_ERROR "LOCAL_SIZE_X must be a positive 32-bit integer")
     endif()
     get_filename_component(source "${K_SOURCE}" ABSOLUTE)
-    get_filename_component(sdk_include "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../compute/kernel/include" ABSOLUTE)
+    if(TARGET lutils::compute_kernel)
+        get_target_property(sdk_include lutils::compute_kernel LUTILS_SDK_INCLUDE_DIR)
+    else()
+        get_filename_component(sdk_include "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../compute/kernel/include" ABSOLUTE)
+    endif()
     set(base "${CMAKE_CURRENT_BINARY_DIR}/generated/${K_NAME}")
     set(include_dirs)
     foreach(dir IN LISTS K_INCLUDE_DIRS)
@@ -99,7 +108,7 @@ function(_lutils_add_kernel_impl target kind)
     set(options "$<TARGET_GENEX_EVAL:${target},$<TARGET_PROPERTY:${target},COMPILE_OPTIONS>>")
     add_custom_command(OUTPUT "${base}.hpp" "${base}.cpp" "${base}.comp" "${base}.spv" "${base}.spv.hpp"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
-        COMMAND lutils-kernelc "${source}" --entry=${K_ENTRY} --name=${K_NAME} --output=${base}
+        COMMAND "$<TARGET_FILE:${kernelc}>" "${source}" --entry=${K_ENTRY} --name=${K_NAME} --output=${base}
             --local-size-x=${K_LOCAL_SIZE_X} --expect-kind=${kind}
             -- -std=c++17 -Werror=macro-redefined "-I${sdk_include}"
             "$<$<BOOL:${includes}>:-I$<JOIN:${includes},;-I>>"
@@ -107,14 +116,21 @@ function(_lutils_add_kernel_impl target kind)
             ${global_macros} "$<FILTER:${options},INCLUDE,^-D.|^-U.>"
         COMMAND "${LUTILS_GLSLANG}" -V --target-env vulkan1.1 -o "${base}.spv" "${base}.comp"
         COMMAND "${LUTILS_SPIRV_VAL}" --target-env vulkan1.1 "${base}.spv"
-        COMMAND lutils-kernelc --embed "${base}.spv" "${base}.spv.hpp" "${K_NAME}"
-        DEPENDS lutils-kernelc "${source}" "${sdk_include}/lutils/compute/Kernel.hpp" ${K_DEPENDS}
+        COMMAND "$<TARGET_FILE:${kernelc}>" --embed "${base}.spv" "${base}.spv.hpp" "${K_NAME}"
+        DEPENDS ${kernelc} "${source}" "${sdk_include}/lutils/compute/Kernel.hpp" ${K_DEPENDS}
         DEPFILE "${base}.d"
         COMMAND_EXPAND_LISTS VERBATIM)
-    add_library(${target} STATIC "${base}.cpp")
+    if(K_OBJECT)
+        add_library(${target} OBJECT "${base}.cpp")
+    else()
+        add_library(${target} STATIC "${base}.cpp")
+    endif()
     target_include_directories(${target} PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated" PRIVATE ${include_dirs})
     target_compile_definitions(${target} PRIVATE ${K_DEFINITIONS})
-    target_link_libraries(${target} PUBLIC lutils::compute PRIVATE lutils_development)
+    target_link_libraries(${target} PUBLIC lutils::compute)
+    if(TARGET lutils_development)
+        target_link_libraries(${target} PRIVATE "$<BUILD_INTERFACE:lutils_development>")
+    endif()
     if(kind STREQUAL "object")
         # The source declares a public C++ type. Share exactly the preprocessing
         # profile used by kernelc, including later target/dependency additions.
