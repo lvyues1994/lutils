@@ -1,6 +1,26 @@
 # lutils
 
-C++17 工具库，提供类型擦除、图像模型及 CPU/Vulkan 计算模块。类型擦除模块为无第三方依赖的头文件库。
+C++17 工具库，提供 expected、类型擦除、图像模型及 CPU/Vulkan 计算模块。
+expected 和类型擦除均为无第三方依赖的头文件库。
+
+## expected
+
+`#include <lutils/Expected.hpp>`，链接 `lutils::core`。
+`lutils::expected<T, E>` 使用与标准库一致的接口命名，支持 `void`、移动专用类型及链式操作：
+
+```cpp
+lutils::expected<int, std::string> parseNumber(std::string_view text);
+
+auto result = parseNumber("42")
+    .transform([](int n) { return n * 2; });
+if (result)
+    use(*result);
+else
+    report(result.error());
+```
+
+实现依据、异常保证和 C++17 限制见 [expected 设计与用法](docs/expected.md)。
+可运行示例为 [examples/expected.cpp](examples/expected.cpp)。
 
 ## 类型擦除
 

@@ -1,3 +1,4 @@
+#include <lutils/Expected.hpp>
 #include <lutils/compute/Runtime.hpp>
 #include <lutils/erasure.hpp>
 #include <lutils/image/Frame.hpp>
@@ -32,6 +33,10 @@ void check(bool value) {
         throw std::runtime_error("consumer result mismatch");
 }
 int main() {
+    auto expectedValue = lutils::expected<int, std::string>{21}.transform([](int x) { return x * 2; });
+    check(expectedValue.has_value() and expectedValue.value() == 42);
+    auto expectedError = lutils::expected<void, int>{lutils::unexpect, 9};
+    check(expectedError.error() == 9);
     te::Any<IValue> value{Value{}};
     check(value.value() == 42);
     auto device = take(co::createCpuDevice());

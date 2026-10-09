@@ -1,3 +1,29 @@
+foreach(case IN ITEMS traits behavior exceptions)
+    add_executable(expected_${case}_tests expected/${case}.cpp)
+    target_link_libraries(expected_${case}_tests PRIVATE lutils::core lutils_development)
+    set_target_properties(expected_${case}_tests PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME expected.${case} COMMAND expected_${case}_tests)
+endforeach()
+
+set(expected_rejections
+    "object or void value type" "unqualified object error type"
+    "and_then must preserve error_type" "or_else must preserve value_type"
+    "transform must return an object or void" "transform_error must return an unqualified object"
+    "value\\(\\) requires a copyable error" "emplace"
+    "unexpected requires an unqualified object" "and_then must return lutils::expected"
+    "object or void value type" "deleted|C2280")
+foreach(case RANGE 1 12)
+    math(EXPR index "${case} - 1")
+    list(GET expected_rejections ${index} pattern)
+    add_test(NAME expected.reject.${case} COMMAND ${CMAKE_COMMAND}
+        -DCOMPILER=${CMAKE_CXX_COMPILER} -DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID}
+        -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/core/include
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/expected/reject.cpp
+        -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/expected-reject-${case}.o
+        -DCASE=${case} "-DPATTERN=${pattern}" -P ${CMAKE_CURRENT_SOURCE_DIR}/expected/reject.cmake)
+endforeach()
+
 add_executable(erasure_tests erasure_tests.cpp)
 target_link_libraries(erasure_tests PRIVATE lutils::erasure lutils_development)
 set_target_properties(erasure_tests PROPERTIES CXX_EXTENSIONS OFF)

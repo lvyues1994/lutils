@@ -1,3 +1,7 @@
+add_executable(expected_example expected.cpp)
+target_link_libraries(expected_example PRIVATE lutils::core lutils_development)
+set_target_properties(expected_example PROPERTIES CXX_EXTENSIONS OFF)
+
 add_executable(erasure_counter counter.cpp)
 target_link_libraries(erasure_counter PRIVATE lutils::erasure lutils_development)
 set_target_properties(erasure_counter PROPERTIES CXX_EXTENSIONS OFF)
