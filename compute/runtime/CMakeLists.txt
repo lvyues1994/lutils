@@ -1,5 +1,8 @@
 find_package(Threads REQUIRED)
-add_library(lutils_compute STATIC src/Runtime.cpp src/CpuExecution.cpp)
+add_library(lutils_compute STATIC src/Runtime.cpp src/CpuExecution.cpp src/Memory.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(lutils_compute PRIVATE src/LinuxDmaBuf.cpp)
+endif()
 add_library(lutils::compute ALIAS lutils_compute)
 target_include_directories(lutils_compute PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

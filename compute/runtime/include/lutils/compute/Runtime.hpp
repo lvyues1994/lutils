@@ -72,6 +72,7 @@ struct ComputeCapabilities {
     bool pushConstant16 = false;
     std::size_t maxWorkgroupInvocations = 1;
     std::size_t maxSharedMemoryBytes = 0;
+    bool externalDmaBuf = false;
 };
 struct DeviceInfo {
     std::string name;
@@ -84,12 +85,16 @@ struct Buffer {
     virtual std::size_t wordCount() const noexcept = 0;
     virtual std::size_t byteCount() const noexcept { return wordCount() * sizeof(Word); }
     virtual std::optional<ImageDesc> imageDescription() const { return {}; }
+    virtual bool aliases(Buffer const &other) const noexcept { return this == &other; }
+    virtual bool writable() const noexcept { return true; }
 };
 struct Kernel {
     virtual ~Kernel() = default;
     virtual KernelSource const &source() const noexcept = 0;
 };
 using BufferHandle = std::shared_ptr<Buffer>;
+struct Memory;
+using MemoryHandle = std::shared_ptr<Memory>;
 using KernelHandle = std::shared_ptr<Kernel>;
 struct Dispatch {
     KernelHandle kernel;
@@ -146,6 +151,8 @@ struct Device {
     virtual ~Device() = default;
     virtual DeviceInfo info() const = 0;
     virtual Result<BufferHandle> createBuffer(std::size_t words) = 0;
+    // Direct binding only. Unsupported memory is never uploaded or staged.
+    virtual Result<BufferHandle> importMemory(MemoryHandle const &memory);
     virtual Result<BufferHandle> createBufferBytes(std::size_t bytes) {
         if (bytes % sizeof(Word))
             return Error{ErrorCode::Unsupported, "device requires whole-word buffer storage"};

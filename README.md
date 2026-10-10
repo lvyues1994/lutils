@@ -103,11 +103,15 @@ C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考�
 
 | 目标 | 内容 |
 | --- | --- |
-| `lutils::image` | 通用固定块格式描述、颜色信息、正负 stride 视图、主机帧 |
+| `lutils::image` | 通用固定块格式描述、颜色信息、正负 stride 视图、主机帧、CPU 裁剪与填充 |
+| `lutils::image_memory` | 统一图像资源、CPU 映射、Linux dma-buf 接入 |
 | `lutils::compute_kernel` | C++17 内核资源访问类型 |
 | `lutils::compute`、`lutils::compute_cpu` | 任务、资源、CPU 参考执行 |
 | `lutils::compute_vulkan` | 可选 Vulkan 1.1 计算后端 |
-| `lutils::image_ops` | 由 C++ 内核生成的图像转换及设备帧 |
+| `lutils::image_ops` | 由 C++ 内核生成的图像转换、设备帧与裁剪/填充执行器 |
+
+裁剪、背景填充和直接访问共享内存的用法见 [图像区域操作](docs/image-regions.md)，
+可运行示例为 [examples/image_regions.cpp](examples/image_regions.cpp)。
 
 基础图像和 CPU 运行时随默认构建启用。构建内核工具与图像算法需要匹配的
 Clang/LLVM 18 开发文件、`glslangValidator`、`spirv-val`；Vulkan 后端另需 Vulkan

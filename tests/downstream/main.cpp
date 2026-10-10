@@ -2,6 +2,7 @@
 #include <lutils/compute/Runtime.hpp>
 #include <lutils/erasure.hpp>
 #include <lutils/image/Frame.hpp>
+#include <lutils/image/ImageResource.hpp>
 #include <stdexcept>
 #ifdef WITH_SHADER
 #include <consumer_shader.hpp>
@@ -33,7 +34,8 @@ void check(bool value) {
         throw std::runtime_error("consumer result mismatch");
 }
 int main() {
-    auto expectedValue = lutils::expected<int, std::string>{21}.transform([](int x) { return x * 2; });
+    auto expectedValue =
+        lutils::expected<int, std::string>{21}.transform([](int x) { return x * 2; });
     check(expectedValue.has_value() and expectedValue.value() == 42);
     auto expectedError = lutils::expected<void, int>{lutils::unexpect, 9};
     check(expectedError.error() == 9);
@@ -50,6 +52,11 @@ int main() {
                         im::ChromaLocation::Cosited, im::Primaries::Bt601_625, im::Transfer::Bt709},
                        im::Scan::Progressive};
     auto input = take(im::HostFrame::create(desc));
+    auto regionOutput = take(im::HostFrame::create(desc));
+    auto cropPlan = take(im::RegionPlan::crop(desc, {0, 0, 2, 2}));
+    auto regions = im::createCpuRegionExecutor();
+    take(regions->run(cropPlan, take(im::ImageResource::borrow(input.view())),
+                      take(im::ImageResource::borrow(regionOutput.view()))));
 #ifdef WITH_OPS
     auto outDesc = desc;
     outDesc.format = im::nv12();

@@ -2,7 +2,7 @@ include(CMakePackageConfigHelpers)
 
 set(lutils_package_dir "${CMAKE_INSTALL_LIBDIR}/cmake/lutils")
 set(lutils_base_targets lutils_core lutils_erasure lutils_image lutils_compute_kernel
-    lutils_compute lutils_compute_cpu)
+    lutils_compute lutils_compute_cpu lutils_image_memory)
 foreach(target IN LISTS lutils_base_targets)
     string(REGEX REPLACE "^lutils_" "" export_name "${target}")
     set_target_properties(${target} PROPERTIES EXPORT_NAME "${export_name}")
@@ -10,7 +10,7 @@ endforeach()
 install(TARGETS ${lutils_base_targets} EXPORT lutilsCoreTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT lutilsCoreTargets NAMESPACE lutils:: DESTINATION ${lutils_package_dir})
-foreach(module IN ITEMS core erasure image compute/kernel compute/runtime)
+foreach(module IN ITEMS core erasure image image/memory compute/kernel compute/runtime)
     install(DIRECTORY "${PROJECT_SOURCE_DIR}/${module}/include/"
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endforeach()

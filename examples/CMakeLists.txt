@@ -1,4 +1,6 @@
 add_executable(expected_example expected.cpp)
+add_executable(image_regions_example image_regions.cpp)
+target_link_libraries(image_regions_example PRIVATE lutils::image_memory lutils_development)
 target_link_libraries(expected_example PRIVATE lutils::core lutils_development)
 set_target_properties(expected_example PROPERTIES CXX_EXTENSIONS OFF)
 

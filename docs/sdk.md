@@ -63,13 +63,14 @@ target_link_libraries(app PRIVATE lutils::erasure lutils::image lutils::compute_
 ```
 
 配置时传 `-DCMAKE_PREFIX_PATH=/path/to/sdk`。
-无组件请求时只加载基础目标：core、erasure、image、compute_kernel、compute、compute_cpu。
+无组件请求时只加载基础目标：core、erasure、image、image_memory、compute_kernel、compute、compute_cpu。
+`lutils::image` 提供 CPU 裁剪/填充；`lutils::image_memory` 提供 VA/dma-buf 资源与 CPU 执行器。
 可选组件如下：
 
 | 组件 | 目标与作用 |
 | --- | --- |
 | vulkan | lutils::compute_vulkan；查找系统 Vulkan |
-| image_ops | lutils::image_ops；预编译图像转换，支持 CPU 或另选 Vulkan |
+| image_ops | lutils::image_ops；预编译图像转换、裁剪与填充，支持 CPU 或另选 Vulkan |
 | kernelc | lutils::kernelc 和 lutils_add_shader/lutils_add_kernel；构建新内核 |
 
 ```cmake

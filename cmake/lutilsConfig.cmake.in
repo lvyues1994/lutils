@@ -4,7 +4,7 @@ find_dependency(Threads)
 include("${CMAKE_CURRENT_LIST_DIR}/lutilsCoreTargets.cmake")
 set_property(TARGET lutils::compute_kernel PROPERTY LUTILS_SDK_INCLUDE_DIR
     "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
-foreach(component IN ITEMS core erasure image compute_kernel compute compute_cpu)
+foreach(component IN ITEMS core erasure image image_memory compute_kernel compute compute_cpu)
     set(lutils_${component}_FOUND TRUE)
 endforeach()
 set(lutils_vulkan_FOUND @LUTILS_ENABLE_VULKAN@)

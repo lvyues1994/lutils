@@ -25,7 +25,7 @@ Result<std::size_t> imageWordCount(ImageDesc const &desc) {
     return (bytes + 3) / 4;
 }
 Result<void> CommandList::upload(BufferHandle buffer, std::vector<Word> words) {
-    if (!buffer || buffer->wordCount() != words.size())
+    if (!buffer || !buffer->writable() || buffer->wordCount() != words.size())
         return Error{ErrorCode::InvalidArgument, "upload buffer or size mismatch"};
     commands_.push_back(
         Upload{std::move(buffer), std::make_shared<std::vector<Word> const>(std::move(words))});
@@ -79,6 +79,8 @@ Result<void> CommandList::dispatch(Dispatch command) {
     for (std::size_t i = 0; i < command.buffers.size(); ++i) {
         if (!command.buffers[i])
             return Error{ErrorCode::InvalidArgument, "null buffer"};
+        if (source.bindings[i] != Access::Read && !command.buffers[i]->writable())
+            return Error{ErrorCode::InvalidArgument, "writable binding uses read-only storage"};
         auto image = command.buffers[i]->imageDescription();
         auto const *info = source.resources.empty() ? nullptr : &source.resources[i];
         if (image) {
@@ -93,7 +95,8 @@ Result<void> CommandList::dispatch(Dispatch command) {
             return Error{ErrorCode::InvalidArgument, "buffer binding kind or stride mismatch"};
         }
         for (std::size_t j = 0; j < i; ++j) {
-            if (command.buffers[i] == command.buffers[j] &&
+            if ((command.buffers[i]->aliases(*command.buffers[j]) ||
+                 command.buffers[j]->aliases(*command.buffers[i])) &&
                 (source.bindings[i] != Access::Read || source.bindings[j] != Access::Read))
                 return Error{ErrorCode::InvalidArgument, "writable bindings must not alias"};
         }

@@ -6,6 +6,10 @@
 #include <optional>
 #include <stdexcept>
 #include <vulkan/vulkan.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <lutils/compute/LinuxDmaBuf.hpp>
+#define LUTILS_LINUX_DMA_BUF 1
+#endif
 
 namespace lutils::compute {
 namespace {
@@ -85,6 +89,11 @@ struct DeviceState {
     std::uint32_t timestampBits = 0;
     ComputeCapabilities capabilities;
     bool uniformBuffer16 = false;
+#ifdef LUTILS_LINUX_DMA_BUF
+    PFN_vkGetMemoryFdPropertiesKHR getMemoryFdProperties = nullptr;
+    PFN_vkImportSemaphoreFdKHR importSemaphoreFd = nullptr;
+    PFN_vkGetSemaphoreFdKHR getSemaphoreFd = nullptr;
+#endif
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger = nullptr;
     DeviceState() = default;
@@ -231,9 +240,9 @@ struct DeviceState {
         storage16.storageInputOutput16 = VK_FALSE;
         arithmetic16.shaderInt8 = VK_FALSE;
         d.pNext = &storage16;
+        std::vector<char const *> enabledExtensions;
         if (hasHalf && options.enableFloat16) {
-            d.enabledExtensionCount = 1;
-            d.ppEnabledExtensionNames = &halfExtension;
+            enabledExtensions.push_back(halfExtension);
         } else
             storage16.pNext = nullptr;
         capabilities = {arithmetic16.shaderFloat16 != VK_FALSE,
@@ -242,7 +251,48 @@ struct DeviceState {
                         properties.limits.maxComputeWorkGroupInvocations,
                         properties.limits.maxComputeSharedMemorySize};
         uniformBuffer16 = storage16.uniformAndStorageBuffer16BitAccess != VK_FALSE;
+#ifdef LUTILS_LINUX_DMA_BUF
+        char const *externalExtensions[] = {VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+                                            VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+                                            VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+                                            VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
+        bool external = std::all_of(
+            std::begin(externalExtensions), std::end(externalExtensions), [&](char const *name) {
+                return std::any_of(available.begin(), available.end(), [&](auto const &e) {
+                    return std::strcmp(name, e.extensionName) == 0;
+                });
+            });
+        if (external) {
+            auto query = structure<VkPhysicalDeviceExternalSemaphoreInfo>(
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO);
+            query.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+            auto properties = structure<VkExternalSemaphoreProperties>(
+                VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES);
+            vkGetPhysicalDeviceExternalSemaphoreProperties(physical, &query, &properties);
+            constexpr auto needed = VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT |
+                                    VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
+            external = (properties.externalSemaphoreFeatures & needed) == needed;
+        }
+        capabilities.externalDmaBuf = external;
+        if (external)
+            enabledExtensions.insert(enabledExtensions.end(), std::begin(externalExtensions),
+                                     std::end(externalExtensions));
+#endif
+        d.enabledExtensionCount = static_cast<std::uint32_t>(enabledExtensions.size());
+        d.ppEnabledExtensionNames = enabledExtensions.data();
         check(vkCreateDevice(physical, &d, nullptr, &device), "vkCreateDevice");
+#ifdef LUTILS_LINUX_DMA_BUF
+        if (capabilities.externalDmaBuf) {
+            getMemoryFdProperties = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
+                vkGetDeviceProcAddr(device, "vkGetMemoryFdPropertiesKHR"));
+            importSemaphoreFd = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
+                vkGetDeviceProcAddr(device, "vkImportSemaphoreFdKHR"));
+            getSemaphoreFd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+                vkGetDeviceProcAddr(device, "vkGetSemaphoreFdKHR"));
+            if (!getMemoryFdProperties || !importSemaphoreFd || !getSemaphoreFd)
+                throw Failure{"dma-buf entry points unavailable"};
+        }
+#endif
         vkGetDeviceQueue(device, family, 0, &queue);
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
     }
@@ -257,6 +307,99 @@ struct VulkanBuffer final : Buffer {
     std::size_t logicalBytes = 0;
     bool coherent = false;
     bool initialized = false;
+#ifdef LUTILS_LINUX_DMA_BUF
+    std::shared_ptr<DmaBufMemory> external;
+    bool aliases(Buffer const &other) const noexcept override {
+        auto const *b = dynamic_cast<VulkanBuffer const *>(&other);
+        return this == &other || (external && b && b->external && external->aliases(*b->external));
+    }
+    bool writable() const noexcept override { return !external || external->writable(); }
+    Result<void> importDmaBuf(std::shared_ptr<DmaBufMemory> source) {
+        if (!state->capabilities.externalDmaBuf)
+            return Error{
+                ErrorCode::Unsupported,
+                "Vulkan dma-buf import, foreign ownership or sync-file interop unavailable"};
+        auto bytes = source->byteCount();
+        if (!bytes || bytes % 4 || bytes > state->properties.limits.maxStorageBufferRange)
+            return Error{ErrorCode::Unsupported,
+                         "dma-buf capacity must be word aligned and within storage buffer limits"};
+        auto query = structure<VkPhysicalDeviceExternalBufferInfo>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO);
+        query.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        query.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        auto properties =
+            structure<VkExternalBufferProperties>(VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES);
+        vkGetPhysicalDeviceExternalBufferProperties(state->physical, &query, &properties);
+        if (!(properties.externalMemoryProperties.externalMemoryFeatures &
+              VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
+            return Error{ErrorCode::Unsupported,
+                         "dma-buf storage buffers are not importable on this device"};
+        auto ext = structure<VkExternalMemoryBufferCreateInfo>(
+            VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
+        ext.handleTypes = query.handleType;
+        auto create = structure<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+        create.pNext = &ext;
+        create.size = bytes;
+        create.usage = query.usage;
+        create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateBuffer(state->device, &create, nullptr, &buffer), "create imported buffer");
+        auto requirements =
+            structure<VkMemoryRequirements2>(VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2);
+        auto dedicatedRequirements = structure<VkMemoryDedicatedRequirements>(
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
+        requirements.pNext = &dedicatedRequirements;
+        auto info = structure<VkBufferMemoryRequirementsInfo2>(
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2);
+        info.buffer = buffer;
+        vkGetBufferMemoryRequirements2(state->device, &info, &requirements);
+        auto const &req = requirements.memoryRequirements;
+        if (req.size > bytes)
+            return Error{ErrorCode::Unsupported,
+                         "dma-buf allocation is smaller than Vulkan memory requirements"};
+        auto fdProperties =
+            structure<VkMemoryFdPropertiesKHR>(VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR);
+        check(state->getMemoryFdProperties(state->device, query.handleType, source->fd(),
+                                           &fdProperties),
+              "query dma-buf memory types");
+        auto types = req.memoryTypeBits & fdProperties.memoryTypeBits;
+        std::uint32_t index = 0;
+        while (index < state->memory.memoryTypeCount && !(types & (1u << index)))
+            ++index;
+        if (index == state->memory.memoryTypeCount)
+            return Error{ErrorCode::Unsupported, "dma-buf has no compatible Vulkan memory type"};
+        auto duplicate = FileDescriptor::duplicate(source->fd());
+        if (!duplicate)
+            return duplicate.error();
+        auto import =
+            structure<VkImportMemoryFdInfoKHR>(VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR);
+        import.handleType = query.handleType;
+        import.fd = duplicate.value().get();
+        auto dedicated = structure<VkMemoryDedicatedAllocateInfo>(
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
+        dedicated.buffer = buffer;
+        // Dedicated-only imports must exactly match this buffer's requirements.
+        bool needsDedicated = dedicatedRequirements.requiresDedicatedAllocation ||
+                              (properties.externalMemoryProperties.externalMemoryFeatures &
+                               VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT);
+        if (needsDedicated && req.size != bytes)
+            return Error{ErrorCode::Unsupported, "dedicated dma-buf allocation size mismatch"};
+        if (needsDedicated)
+            import.pNext = &dedicated;
+        auto allocation = structure<VkMemoryAllocateInfo>(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+        allocation.pNext = &import;
+        allocation.allocationSize = bytes;
+        allocation.memoryTypeIndex = index;
+        check(vkAllocateMemory(state->device, &allocation, nullptr, &memory),
+              "import dma-buf memory");
+        (void)duplicate.value().release(); // successful import transfers descriptor ownership
+        check(vkBindBufferMemory(state->device, buffer, memory, 0), "bind dma-buf memory");
+        external = std::move(source);
+        words = bytes / 4;
+        logicalBytes = bytes;
+        initialized = true; // Never initialize or clear an external allocation.
+        return {};
+    }
+#endif
     explicit VulkanBuffer(std::shared_ptr<DeviceState> s) : state(std::move(s)) {}
     VulkanBuffer(VulkanBuffer const &) = delete;
     VulkanBuffer &operator=(VulkanBuffer const &) = delete;
@@ -667,6 +810,123 @@ struct ReadbackResult {
     ReadbackToken token;
     std::shared_ptr<std::vector<Word>> words;
 };
+#ifdef LUTILS_LINUX_DMA_BUF
+struct ExternalSubmission {
+    struct Resource {
+        std::shared_ptr<VulkanBuffer> buffer;
+        Access access;
+    };
+    std::shared_ptr<DeviceState> state;
+    std::vector<Resource> resources;
+    std::vector<VkSemaphore> waits;
+    std::vector<VkPipelineStageFlags> stages;
+    VkSemaphore signal = VK_NULL_HANDLE;
+    explicit ExternalSubmission(std::shared_ptr<DeviceState> s) : state(std::move(s)) {}
+    ~ExternalSubmission() {
+        for (auto semaphore : waits)
+            vkDestroySemaphore(state->device, semaphore, nullptr);
+        if (signal)
+            vkDestroySemaphore(state->device, signal, nullptr);
+    }
+    void add(BufferHandle const &handle, Access access) {
+        auto buffer = std::dynamic_pointer_cast<VulkanBuffer>(handle);
+        if (!buffer || !buffer->external)
+            return;
+        for (auto &r : resources) {
+            if (r.buffer == buffer) {
+                if (r.access != access)
+                    r.access = Access::ReadWrite;
+                return;
+            }
+            if (r.buffer->aliases(*buffer))
+                throw Failure{"use one canonical imported buffer per dma-buf in a submission"};
+        }
+        resources.push_back({std::move(buffer), access});
+    }
+    void prepare(std::vector<Command> const &commands) {
+        for (auto const &command : commands)
+            if (auto const *d = std::get_if<Dispatch>(&command))
+                for (std::size_t i = 0; i < d->buffers.size(); ++i)
+                    add(d->buffers[i], d->kernel->source().bindings[i]);
+        waits.reserve(resources.size());
+        stages.assign(resources.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        for (auto const &r : resources) {
+            auto fence = r.buffer->external->exportSyncFile(r.access);
+            if (!fence)
+                throw Failure{fence.error().message};
+            auto create = structure<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+            VkSemaphore semaphore = VK_NULL_HANDLE;
+            check(vkCreateSemaphore(state->device, &create, nullptr, &semaphore),
+                  "create acquire semaphore");
+            waits.push_back(semaphore);
+            auto import = structure<VkImportSemaphoreFdInfoKHR>(
+                VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR);
+            import.semaphore = semaphore;
+            import.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+            import.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+            import.fd = fence.value().get();
+            check(state->importSemaphoreFd(state->device, &import), "import acquire sync-file");
+            (void)fence.value().release();
+        }
+        if (!resources.empty()) {
+            auto exportInfo = structure<VkExportSemaphoreCreateInfo>(
+                VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO);
+            exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+            auto create = structure<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
+            create.pNext = &exportInfo;
+            check(vkCreateSemaphore(state->device, &create, nullptr, &signal),
+                  "create release semaphore");
+        }
+    }
+    void ownership(VkCommandBuffer command, bool acquire) {
+        for (auto const &r : resources) {
+            auto barrier =
+                structure<VkBufferMemoryBarrier>(VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
+            barrier.srcQueueFamilyIndex = acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT : state->family;
+            barrier.dstQueueFamilyIndex = acquire ? state->family : VK_QUEUE_FAMILY_FOREIGN_EXT;
+            barrier.buffer = r.buffer->buffer;
+            barrier.size = VK_WHOLE_SIZE;
+            VkAccessFlags mask = r.access == Access::Read
+                                     ? VK_ACCESS_SHADER_READ_BIT
+                                     : VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.srcAccessMask = acquire ? 0 : mask;
+            barrier.dstAccessMask = acquire ? mask : 0;
+            vkCmdPipelineBarrier(command,
+                                 acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                         : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 acquire ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                         : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                 0, 0, nullptr, 1, &barrier, 0, nullptr);
+        }
+    }
+    void configure(VkSubmitInfo &submit) const {
+        submit.waitSemaphoreCount = static_cast<std::uint32_t>(waits.size());
+        submit.pWaitSemaphores = waits.data();
+        submit.pWaitDstStageMask = stages.data();
+        if (signal) {
+            submit.signalSemaphoreCount = 1;
+            submit.pSignalSemaphores = &signal;
+        }
+    }
+    void publish() {
+        if (!signal)
+            return;
+        auto info = structure<VkSemaphoreGetFdInfoKHR>(VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR);
+        info.semaphore = signal;
+        info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        int fd = -1;
+        check(state->getSemaphoreFd(state->device, &info, &fd), "export release sync-file");
+        FileDescriptor fence{fd};
+        if (fd == -1)
+            return; // Vulkan permits an already-signaled payload.
+        for (auto const &r : resources) {
+            auto done = r.buffer->external->importSyncFile(fd, r.access);
+            if (!done)
+                throw Failure{done.error().message};
+        }
+    }
+};
+#endif
 struct Submission final : VulkanCompletion {
     std::shared_ptr<SlotPool> pool;
     std::unique_ptr<SubmissionSlot> slot;
@@ -677,6 +937,9 @@ struct Submission final : VulkanCompletion {
     bool timed;
     std::optional<Error> failure;
     double elapsed = 0;
+#ifdef LUTILS_LINUX_DMA_BUF
+    std::unique_ptr<ExternalSubmission> external;
+#endif
     explicit Submission(std::shared_ptr<SlotPool> p)
         : pool(std::move(p)), timed(pool->state->options.enableTimestamps) {}
     ~Submission() override { slot.reset(); }
@@ -717,6 +980,9 @@ struct Submission final : VulkanCompletion {
             }
         }
         completed = true;
+#ifdef LUTILS_LINUX_DMA_BUF
+        external.reset();
+#endif
         retained.clear();
         initialized.clear();
         pool.reset();
@@ -902,6 +1168,10 @@ struct CommandRecorder {
 };
 void record(Submission &submission) {
     auto &slot = *submission.slot;
+#ifdef LUTILS_LINUX_DMA_BUF
+    submission.external = std::make_unique<ExternalSubmission>(slot.state);
+    submission.external->prepare(submission.retained);
+#endif
     std::size_t descriptors = 0, sets = 0;
     for (auto const &command : submission.retained) {
         if (auto const *d = std::get_if<Dispatch>(&command)) {
@@ -925,6 +1195,9 @@ void record(Submission &submission) {
         vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, slot.queries, 0);
     }
     orderedBarrier(slot.command);
+#ifdef LUTILS_LINUX_DMA_BUF
+    submission.external->ownership(slot.command, true);
+#endif
     CommandRecorder recorder{submission};
     for (auto const &command : submission.retained)
         std::visit([&](auto const &c) { recorder.initialize(c); }, command);
@@ -939,10 +1212,16 @@ void record(Submission &submission) {
             VK_ACCESS_HOST_READ_BIT);
     if (slot.queries)
         vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, slot.queries, 1);
+#ifdef LUTILS_LINUX_DMA_BUF
+    submission.external->ownership(slot.command, false);
+#endif
     check(vkEndCommandBuffer(slot.command), "end command buffer");
     auto submit = structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &slot.command;
+#ifdef LUTILS_LINUX_DMA_BUF
+    submission.external->configure(submit);
+#endif
     check(vkQueueSubmit(slot.state->queue, 1, &submit, slot.fence), "submit queue");
     slot.submitted = true;
     for (auto const &resource : submission.initialized) {
@@ -951,6 +1230,15 @@ void record(Submission &submission) {
         else
             static_cast<VulkanBuffer *>(resource.get())->initialized = true;
     }
+#ifdef LUTILS_LINUX_DMA_BUF
+    try {
+        submission.external->publish();
+    } catch (Failure const &e) {
+        throw Failure{
+            std::string{"GPU work was submitted, but release fence publication failed: "} +
+            e.what()};
+    }
+#endif
 }
 struct VulkanDevice final : Device {
     std::shared_ptr<DeviceState> state;
@@ -973,6 +1261,25 @@ struct VulkanDevice final : Device {
         return {state->properties.deviceName,
                 state->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU,
                 state->properties.limits.maxStorageBufferRange, state->capabilities};
+    }
+    Result<BufferHandle> importMemory(MemoryHandle const &memory) override {
+#ifdef LUTILS_LINUX_DMA_BUF
+        if (auto source = std::dynamic_pointer_cast<DmaBufMemory>(memory)) {
+            try {
+                auto result = std::make_shared<VulkanBuffer>(state);
+                auto imported = result->importDmaBuf(std::move(source));
+                if (!imported)
+                    return imported.error();
+                return BufferHandle{std::move(result)};
+            } catch (Failure const &e) {
+                return deviceError(e);
+            }
+        }
+#endif
+        auto result = Device::importMemory(memory);
+        if (result && !get(result.value()))
+            return Error{ErrorCode::InvalidArgument, "resident buffer belongs to another device"};
+        return result;
     }
     bool get(BufferHandle const &buffer) const {
         if (auto const *image = dynamic_cast<VulkanImage *>(buffer.get()))
@@ -1099,11 +1406,21 @@ struct VulkanDevice final : Device {
         return *data.value();
     }
     Result<void> validateCommand(Upload const &c) const {
+#ifdef LUTILS_LINUX_DMA_BUF
+        if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
+            return Error{ErrorCode::Unsupported,
+                         "external buffers use direct dispatch or CPU mapping, not uploads"};
+#endif
         return get(c.buffer)
                    ? Result<void>{}
                    : Result<void>{Error{ErrorCode::InvalidArgument, "foreign upload buffer"}};
     }
     Result<void> validateCommand(Readback const &c) const {
+#ifdef LUTILS_LINUX_DMA_BUF
+        if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
+            return Error{ErrorCode::Unsupported,
+                         "external buffers use direct dispatch or CPU mapping, not readbacks"};
+#endif
         return get(c.buffer)
                    ? Result<void>{}
                    : Result<void>{Error{ErrorCode::InvalidArgument, "foreign readback buffer"}};

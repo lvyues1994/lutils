@@ -1,4 +1,4 @@
-add_library(lutils_image STATIC src/Frame.cpp)
+add_library(lutils_image STATIC src/Frame.cpp src/Region.cpp)
 add_library(lutils::image ALIAS lutils_image)
 target_include_directories(lutils_image PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
