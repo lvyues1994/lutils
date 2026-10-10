@@ -1,0 +1,11 @@
+# These are host programs; never resolve them inside the NDK sysroot.
+set(LUTILS_ANDROID_SERIAL "$ENV{ANDROID_SERIAL}" CACHE STRING "ADB device for Android tests")
+option(LUTILS_ANDROID_DEVICE_TESTS "Run cross-compiled tests on an explicitly selected ADB device" OFF)
+if(LUTILS_ANDROID_DEVICE_TESTS)
+    if(NOT LUTILS_ANDROID_SERIAL)
+        message(FATAL_ERROR "Set LUTILS_ANDROID_SERIAL to the test device's adb serial")
+    endif()
+    find_program(LUTILS_ADB adb HINTS "$ENV{ANDROID_HOME}/platform-tools" REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    find_program(LUTILS_UV uv REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    set(CMAKE_CROSSCOMPILING_EMULATOR "${LUTILS_UV};run;--no-cache;--offline;--no-project;${CMAKE_CURRENT_LIST_DIR}/../tools/android/run.py;--adb;${LUTILS_ADB};--serial;${LUTILS_ANDROID_SERIAL};--")
+endif()

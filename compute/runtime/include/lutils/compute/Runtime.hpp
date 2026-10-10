@@ -73,6 +73,8 @@ struct ComputeCapabilities {
     std::size_t maxWorkgroupInvocations = 1;
     std::size_t maxSharedMemoryBytes = 0;
     bool externalDmaBuf = false;
+    bool externalAndroidHardwareBuffer = false;
+    bool float64 = false;
 };
 struct DeviceInfo {
     std::string name;

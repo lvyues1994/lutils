@@ -3,8 +3,19 @@ add_library(lutils_compute STATIC src/Runtime.cpp src/CpuExecution.cpp src/Memor
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(lutils_compute PRIVATE src/LinuxDmaBuf.cpp)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    target_sources(lutils_compute PRIVATE src/FileDescriptor.cpp)
+endif()
+if(ANDROID)
+    if(ANDROID_PLATFORM_LEVEL LESS 26)
+        message(FATAL_ERROR "Android compute memory requires API 26 or newer")
+    endif()
+    target_sources(lutils_compute PRIVATE src/AndroidHardwareBuffer.cpp)
+    target_link_libraries(lutils_compute PRIVATE android ${CMAKE_DL_LIBS})
+endif()
 add_library(lutils::compute ALIAS lutils_compute)
 target_include_directories(lutils_compute PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-target_link_libraries(lutils_compute PUBLIC lutils::core lutils::compute_kernel Threads::Threads PRIVATE "$<BUILD_INTERFACE:lutils_development>")
+target_link_libraries(lutils_compute PUBLIC lutils::core lutils::compute_kernel
+    PRIVATE Threads::Threads "$<BUILD_INTERFACE:lutils_development>")

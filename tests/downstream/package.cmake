@@ -22,9 +22,9 @@ foreach(kind IN ITEMS binary source)
 endforeach()
 run("${CMAKE_COMMAND}" -S "${ROOT}/tests/downstream" -B "${WORK}/consumer" -G Ninja
     "-DCMAKE_CXX_COMPILER=${COMPILER}" -DCMAKE_BUILD_TYPE=Release
-    "-DCMAKE_PREFIX_PATH=${WORK}/binary/relocated package" -DWITH_SHADER=${FULL}
-    -DWITH_OPS=${FULL} -DWITH_GPU=${GPU}
-    "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
+    "-DCMAKE_PREFIX_PATH=${WORK}/binary/relocated package" -DWITH_SHADER=${TOOLS}
+    -DWITH_OPS=${OPS} -DWITH_GPU=${GPU}
+    "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
 run("${CMAKE_COMMAND}" --build "${WORK}/consumer" -j2)
 run("${WORK}/consumer/consumer")
 run("${CMAKE_COMMAND}" -S "${WORK}/source/relocated package" -B "${WORK}/source-build" -G Ninja
@@ -32,13 +32,13 @@ run("${CMAKE_COMMAND}" -S "${WORK}/source/relocated package" -B "${WORK}/source-
     -DLUTILS_BUILD_EXAMPLES=OFF -DLUTILS_INSTALL=OFF)
 run("${CMAKE_COMMAND}" --build "${WORK}/source-build" -j2)
 run("${CTEST}" --test-dir "${WORK}/source-build" --output-on-failure)
-if(FULL)
+if(OPS OR TOOLS)
     run("${CMAKE_COMMAND}" -S "${WORK}/source/relocated package/tests/downstream"
         -B "${WORK}/source-consumer" -G Ninja -DCMAKE_BUILD_TYPE=Release
         "-DCMAKE_CXX_COMPILER=${COMPILER}" "-DSOURCE_ROOT=${WORK}/source/relocated package"
-        -DWITH_SHADER=ON -DWITH_OPS=ON -DWITH_GPU=${GPU} "-DLLVM_DIR=${LLVM_DIR}"
+        -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS} -DWITH_GPU=${GPU} "-DLLVM_DIR=${LLVM_DIR}"
         "-DLUTILS_CLANG_INCLUDE_DIR=${CLANG_INCLUDE}" "-DLUTILS_CLANG_CPP_LIBRARY=${CLANG_LIBRARY}"
-        "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
+        "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
     run("${CMAKE_COMMAND}" --build "${WORK}/source-consumer" -j2)
     run("${WORK}/source-consumer/consumer")
 endif()

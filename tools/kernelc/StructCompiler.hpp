@@ -655,6 +655,33 @@ struct StructCompiler {
                 }
                 return n + "(" + args(c) + ")";
             }
+            // libc++ can expose scalar <cmath> overloads through std::__math.
+            // Recognize standard declarations semantically, without translating
+            // their implementation-specific bodies or matching user lookalikes.
+            static std::set<std::string> scalarMath{"sqrt", "abs", "pow", "floor",
+                                                    "ceil", "sin", "cos"};
+            bool standardNamespace = false;
+            bool hasNamespace = false;
+            for (auto const *scope = f->getDeclContext(); scope; scope = scope->getParent())
+                if (auto const *space = dyn_cast<NamespaceDecl>(scope)) {
+                    hasNamespace = true;
+                    standardNamespace |= space->isStdNamespace();
+                }
+            if (scalarMath.count(n) && (standardNamespace || !hasNamespace) &&
+                ctx.getSourceManager().isInSystemHeader(f->getLocation())) {
+                if (!f->getReturnType()->isArithmeticType())
+                    fail(e, "standard shader math requires scalar arithmetic types");
+                for (auto const *argument : c->arguments())
+                    if (!argument->getType()->isArithmeticType())
+                        fail(e, "standard shader math requires scalar arithmetic arguments");
+                auto const scalar = type(c->getType()).glsl;
+                if (scalar != "float" && scalar != "double" && !(n == "abs" && scalar == "int"))
+                    fail(e, "unsupported standard shader math result type");
+                std::string call = n + "(";
+                for (unsigned i = 0; i < c->getNumArgs(); ++i)
+                    call += (i ? "," : "") + scalar + "(" + expr(c->getArg(i)) + ")";
+                return call + ")";
+            }
             return function(f, false) + "(" + args(c) + ")";
         }
         fail(e, std::string{"unsupported shader expression: "} + e->getStmtClassName());

@@ -17,9 +17,11 @@ sudo apt-get install ninja-build clang-18 llvm-18-dev libclang-18-dev libclang-c
 | compute-release | 完整计算、Vulkan、示例和性能基准 |
 | compute-sanitize | 完整计算 ASan/UBSan，安装关闭 |
 | cpu-tsan | 线程池/工作组执行的 ThreadSanitizer 测试 |
+| host-kernel-tools | PC 上运行的 kernelc；用于 Android 交叉编译 |
+| android-arm64 / android-compute | NDK r28 基础库 / 完整计算；见 [Android 接入](android.md) |
 | sdk-release | 完整 SDK；测试、示例、基准可执行程序关闭 |
 
-各预设都有同名 build preset；除 sdk-release 外也有 test preset。
+各预设都有同名 build preset；除 sdk-release、host-kernel-tools 外也有 test preset。
 非标准依赖路径可指定 `LLVM_DIR`、`LUTILS_CLANG_INCLUDE_DIR`、`LUTILS_CLANG_CPP_LIBRARY`、
 `LUTILS_GLSLANG`、`LUTILS_SPIRV_VAL`。普通配置不会下载依赖。
 

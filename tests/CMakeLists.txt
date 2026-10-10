@@ -1,3 +1,12 @@
+set(lutils_test_tools OFF)
+if(TARGET lutils::kernelc)
+    set(lutils_test_tools ON)
+endif()
+set(lutils_test_target_flags)
+if(ANDROID)
+    list(APPEND lutils_test_target_flags "--target=${CMAKE_CXX_COMPILER_TARGET}"
+        "--sysroot=${CMAKE_SYSROOT}" -stdlib=libc++)
+endif()
 foreach(case IN ITEMS traits behavior exceptions)
     add_executable(expected_${case}_tests expected/${case}.cpp)
     target_link_libraries(expected_${case}_tests PRIVATE lutils::core lutils_development)
@@ -17,7 +26,7 @@ foreach(case RANGE 1 12)
     math(EXPR index "${case} - 1")
     list(GET expected_rejections ${index} pattern)
     add_test(NAME expected.reject.${case} COMMAND ${CMAKE_COMMAND}
-        -DCOMPILER=${CMAKE_CXX_COMPILER} -DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID}
+        -DCOMPILER=${CMAKE_CXX_COMPILER} -DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID} "-DTARGET_FLAGS=${lutils_test_target_flags}"
         -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/core/include
         -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/expected/reject.cpp
         -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/expected-reject-${case}.o
@@ -43,14 +52,15 @@ foreach(case IN ITEMS empty-owner empty-borrow noexcept-call)
     add_test(NAME erasure.contract.${case}
         COMMAND ${CMAKE_COMMAND}
             -DPROGRAM=$<TARGET_FILE:erasure_tests> -DCASE=${case}
+            "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_termination.cmake")
 endforeach()
 
-if(LUTILS_INSTALL AND lutils_top_level)
+if(LUTILS_INSTALL AND lutils_top_level AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME downstream.packages COMMAND ${CMAKE_COMMAND}
         -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-check -DCOMPILER=${CMAKE_CXX_COMPILER}
-        -DFULL=${LUTILS_BUILD_KERNELC} -DGPU=${LUTILS_ENABLE_VULKAN}
+        -DOPS=${LUTILS_BUILD_IMAGE_OPS} -DTOOLS=${lutils_test_tools} -DHOST_KERNELC=${LUTILS_HOST_KERNELC} -DGPU=${LUTILS_ENABLE_VULKAN}
         -DLLVM_DIR=${LLVM_DIR} -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR}
         -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
         -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
@@ -63,7 +73,7 @@ foreach(case IN ITEMS cycle missing_member const_mutation copy_move_only)
     add_test(NAME erasure.reject.${case}
         COMMAND ${CMAKE_COMMAND}
             -DCOMPILER=${CMAKE_CXX_COMPILER}
-            -DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID}
+            -DCOMPILER_ID=${CMAKE_CXX_COMPILER_ID} "-DTARGET_FLAGS=${lutils_test_target_flags}"
             -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/erasure/include
             -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/${case}.cpp
             -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/${case}.o
@@ -77,6 +87,23 @@ add_test(NAME image.contracts COMMAND image_tests)
 add_executable(image_region_tests image_regions.cpp)
 target_link_libraries(image_region_tests PRIVATE lutils::image_memory lutils_development)
 add_test(NAME image.regions COMMAND image_region_tests)
+if(ANDROID)
+    add_executable(android_fence_tests regions/android_fences.cpp)
+    target_link_libraries(android_fence_tests PRIVATE lutils::image_memory lutils_development)
+    target_link_options(android_fence_tests PRIVATE -Wl,--wrap=ioctl -Wl,--wrap=poll)
+    add_test(NAME image.memory.android_fences COMMAND android_fence_tests)
+    set_tests_properties(image.memory.android_fences PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    add_executable(android_region_tests regions/android.cpp)
+    target_link_libraries(android_region_tests PRIVATE lutils::image_memory lutils_development)
+    add_test(NAME image.regions.android_cpu COMMAND android_region_tests)
+    set_tests_properties(image.regions.android_cpu PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    if(LUTILS_BUILD_IMAGE_OPS AND LUTILS_ENABLE_VULKAN)
+        target_link_libraries(android_region_tests PRIVATE lutils::image_ops lutils::compute_vulkan)
+        target_compile_definitions(android_region_tests PRIVATE LUTILS_TEST_REGION_DEVICE)
+        add_test(NAME image.regions.android_vulkan COMMAND android_region_tests --vulkan)
+        set_tests_properties(image.regions.android_vulkan PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(dmabuf_region_tests regions/dmabuf.cpp)
     target_link_libraries(dmabuf_region_tests PRIVATE lutils::image_memory lutils_development)
@@ -104,6 +131,7 @@ target_link_libraries(cpu_execution_tests PRIVATE lutils::compute lutils_develop
 add_test(NAME compute.execution COMMAND cpu_execution_tests)
 set_tests_properties(compute.execution PROPERTIES TIMEOUT 30)
 
+if(NOT CMAKE_CROSSCOMPILING)
 foreach(mode IN ITEMS source install)
     if(mode STREQUAL "install" AND NOT LUTILS_INSTALL)
         continue()
@@ -111,7 +139,7 @@ foreach(mode IN ITEMS source install)
     add_test(NAME downstream.${mode} COMMAND ${CMAKE_COMMAND}
         -DMODE=${mode} -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/downstream-${mode}
-        -DCOMPILER=${CMAKE_CXX_COMPILER} -DFULL=${LUTILS_BUILD_KERNELC}
+        -DCOMPILER=${CMAKE_CXX_COMPILER} -DOPS=${LUTILS_BUILD_IMAGE_OPS} -DTOOLS=${lutils_test_tools} -DHOST_KERNELC=${LUTILS_HOST_KERNELC}
         -DGPU=${LUTILS_ENABLE_VULKAN} -DLLVM_DIR=${LLVM_DIR}
         -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR} -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
         -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
@@ -119,7 +147,34 @@ foreach(mode IN ITEMS source install)
     set_tests_properties(downstream.${mode} PROPERTIES TIMEOUT 300 LABELS downstream)
 endforeach()
 
-if(LUTILS_BUILD_KERNELC)
+endif()
+
+if(ANDROID AND LUTILS_INSTALL AND LUTILS_ANDROID_DEVICE_TESTS)
+    add_test(NAME downstream.android COMMAND ${CMAKE_COMMAND}
+        -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/android-sdk
+        -DTOOLCHAIN=${CMAKE_TOOLCHAIN_FILE} -DABI=${ANDROID_ABI} -DPLATFORM=${ANDROID_PLATFORM}
+        -DFULL=${LUTILS_BUILD_IMAGE_OPS} -DGPU=${LUTILS_ENABLE_VULKAN}
+        -DHOST_KERNELC=${LUTILS_HOST_KERNELC} -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}" -P ${CMAKE_CURRENT_SOURCE_DIR}/android/sdk.cmake)
+    set_tests_properties(downstream.android PROPERTIES TIMEOUT 180 LABELS downstream)
+endif()
+
+if(LUTILS_BUILD_IMAGE_OPS)
+    set(lutils_math_android 0)
+    if(ANDROID)
+        set(lutils_math_android ${ANDROID_PLATFORM_LEVEL})
+    endif()
+    lutils_add_shader(lutils_portable_math NAME portable_math SOURCE compute/portable_math_kernel.hpp ENTRY portable_math::Math DEFINITIONS LUTILS_EXPECT_ANDROID=${lutils_math_android})
+    lutils_add_shader(lutils_integer_sqrt NAME integer_sqrt SOURCE compute/portable_math_kernel.hpp ENTRY portable_math::IntegerSqrt DEFINITIONS LUTILS_EXPECT_ANDROID=${lutils_math_android})
+    add_executable(portable_math_tests compute/portable_math.cpp)
+    target_link_libraries(portable_math_tests PRIVATE lutils_portable_math lutils_integer_sqrt lutils::compute_cpu lutils_development)
+    add_test(NAME shader.portable_math.cpu COMMAND portable_math_tests)
+    if(LUTILS_ENABLE_VULKAN)
+        target_link_libraries(portable_math_tests PRIVATE lutils::compute_vulkan)
+        target_compile_definitions(portable_math_tests PRIVATE LUTILS_TEST_VULKAN)
+        add_test(NAME shader.portable_math.vulkan COMMAND portable_math_tests vulkan)
+    endif()
     add_executable(device_region_tests compute/regions.cpp)
     target_link_libraries(device_region_tests PRIVATE lutils::image_ops lutils::compute_cpu lutils_development)
     add_test(NAME image.regions.device_cpu COMMAND device_region_tests)
@@ -157,7 +212,7 @@ if(LUTILS_BUILD_KERNELC)
     endif()
 endif()
 
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     set(rejection_patterns "unsupported kernel type" "recursive calls" "parameter fields" "aggregate" "volatile"
         "nested mutation" "nested mutation" "unsupported kernel type" "locals require")
     foreach(case RANGE 1 9)
@@ -171,7 +226,7 @@ if(LUTILS_BUILD_KERNELC)
     lutils_add_kernel(lutils_float_test_kernel NAME float_kernel SOURCE compute/float_kernel.cpp ENTRY float_test::run)
     target_link_libraries(compute_tests PRIVATE lutils_float_test_kernel)
 endif()
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     add_test(NAME kernelc.dependencies COMMAND ${CMAKE_COMMAND}
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DROOT=${PROJECT_SOURCE_DIR}
         -DTEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compute -DWORK=${CMAKE_CURRENT_BINARY_DIR}/dependency-check
@@ -186,7 +241,7 @@ if(LUTILS_BUILD_KERNELC)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/workgroup_options.cmake)
 endif()
 
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     add_executable(shader_tests compute/shader.cpp)
     target_link_libraries(shader_tests PRIVATE lutils_typed_add lutils::compute_cpu lutils_development)
     add_test(NAME shader.cpu COMMAND shader_tests)
@@ -197,7 +252,7 @@ if(LUTILS_BUILD_KERNELC)
     endif()
 endif()
 
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     add_executable(workgroup_tests compute/workgroup.cpp)
     target_link_libraries(workgroup_tests PRIVATE lutils::compute_cpu lutils_development)
     foreach(pair IN ITEMS "reduction;Reduction" "histogram;Histogram" "atomic_ops;AtomicOps" "cancellation;Cancellation" "global_counter;GlobalCounter")
@@ -226,7 +281,7 @@ if(LUTILS_BUILD_KERNELC)
     endforeach()
 endif()
 
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     target_link_libraries(shader_tests PRIVATE lutils_camera_rays)
     target_link_libraries(shader_tests PRIVATE lutils_sphere_tracer)
     target_link_libraries(shader_tests PRIVATE lutils_visualize_rays)
@@ -235,7 +290,7 @@ if(LUTILS_BUILD_KERNELC)
     target_link_libraries(shader_tests PRIVATE lutils_line)
 endif()
 
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     lutils_add_shader(lutils_layout NAME layout SOURCE compute/layout_kernel.hpp ENTRY layout_test::Layout)
     target_link_libraries(shader_tests PRIVATE lutils_layout)
     set(image_formats
@@ -253,7 +308,7 @@ add_test(NAME shader.values COMMAND shader_value_tests)
 add_executable(half_value_tests compute/half_values.cpp)
 target_link_libraries(half_value_tests PRIVATE lutils::compute_kernel lutils_development)
 add_test(NAME shader.half.values COMMAND half_value_tests)
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     lutils_add_shader(lutils_half_arithmetic NAME half_arithmetic SOURCE compute/half_kernel.hpp ENTRY half_test::Arithmetic)
     lutils_add_shader(lutils_half_shared NAME half_shared SOURCE compute/half_kernel.hpp ENTRY half_test::Shared)
     add_executable(half_tests compute/half.cpp)
@@ -266,7 +321,7 @@ if(LUTILS_BUILD_KERNELC)
         set_tests_properties(shader.half.vulkan PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     set(shader_rejection_patterns "custom overloaded" "aggregates" "side effects" "positive bounded"
         "dynamic allocation" "uniforms are read only" "builtins are read only" "arrays are read only"
         "recursive shader" "duplicate buffer" "64-bit integer" "nested mutation" "receiver must be this" "reinterpret casts" "swizzle component count")
@@ -279,7 +334,7 @@ if(LUTILS_BUILD_KERNELC)
             -DCASE=${case} "-DPATTERN=${pattern}" -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/reject.cmake)
     endforeach()
 endif()
-if(LUTILS_BUILD_KERNELC)
+if(LUTILS_BUILD_IMAGE_OPS)
     add_test(NAME shader.preprocessing_profile COMMAND ${CMAKE_COMMAND}
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DROOT=${PROJECT_SOURCE_DIR}
         -DTEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compute -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shader-profile-check

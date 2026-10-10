@@ -55,8 +55,8 @@ function(lutils_check_kernel_profile target)
 endfunction()
 
 function(_lutils_add_kernel_impl target kind)
-    find_program(LUTILS_GLSLANG glslangValidator REQUIRED)
-    find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED)
+    find_program(LUTILS_GLSLANG glslangValidator REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED NO_CMAKE_FIND_ROOT_PATH)
     if(TARGET lutils::kernelc)
         set(kernelc lutils::kernelc)
     else()
@@ -106,11 +106,20 @@ function(_lutils_add_kernel_impl target kind)
     set(definitions "$<TARGET_GENEX_EVAL:${target},$<TARGET_PROPERTY:${target},COMPILE_DEFINITIONS>>")
     set(includes "$<TARGET_GENEX_EVAL:${target},$<TARGET_PROPERTY:${target},INCLUDE_DIRECTORIES>>")
     set(options "$<TARGET_GENEX_EVAL:${target},$<TARGET_PROPERTY:${target},COMPILE_OPTIONS>>")
+    set(target_profile)
+    if(ANDROID)
+        # kernelc runs on the host but parses the same target headers and builtins.
+        list(APPEND target_profile "--target=${CMAKE_CXX_COMPILER_TARGET}"
+            "--sysroot=${CMAKE_SYSROOT}" -stdlib=libc++
+            "-isystem${CMAKE_SYSROOT}/usr/include/c++/v1")
+    elseif(CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "Kernel preprocessing has no profile for this cross-compilation toolchain")
+    endif()
     add_custom_command(OUTPUT "${base}.hpp" "${base}.cpp" "${base}.comp" "${base}.spv" "${base}.spv.hpp"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
         COMMAND "$<TARGET_FILE:${kernelc}>" "${source}" --entry=${K_ENTRY} --name=${K_NAME} --output=${base}
             --local-size-x=${K_LOCAL_SIZE_X} --expect-kind=${kind}
-            -- -std=c++17 -Werror=macro-redefined "-I${sdk_include}"
+            -- -std=c++17 -Werror=macro-redefined ${target_profile} "-I${sdk_include}"
             "$<$<BOOL:${includes}>:-I$<JOIN:${includes},;-I>>"
             "$<$<BOOL:${definitions}>:-D$<JOIN:${definitions},;-D>>"
             ${global_macros} "$<FILTER:${options},INCLUDE,^-D.|^-U.>"

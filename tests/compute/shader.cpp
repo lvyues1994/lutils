@@ -269,7 +269,14 @@ int main(int argc, char **argv) {
         check(!backend.execute(k, {21, 1, 1}));
         for (int i = 0; i < 21; ++i)
             check(c[i] == float(i) * 2.5f);
-        layouts(backend);
+        if (backend.device().info().capabilities.float64)
+            layouts(backend);
+        else {
+            auto rejected =
+                backend.device().createKernel(KernelTraits<layout_test::Layout>::source());
+            check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
+            std::cout << "Float64 unavailable: checked rejection; continuing remaining shaders\n";
+        }
         allFormats(backend);
         dimensions(backend);
         life(backend);

@@ -63,3 +63,25 @@ jobs:
       - run: cmake --preset cpu-tsan
       - run: cmake --build --preset cpu-tsan -j2
       - run: ctest --preset cpu-tsan
+  android-ndk28:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y ninja-build clang-18 llvm-18-dev
+          libclang-18-dev libclang-cpp18-dev glslang-tools spirv-tools
+      - run: |
+          sdkmanager "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - run: |
+          cmake --preset host-kernel-tools -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build --preset host-kernel-tools --target lutils-kernelc -j2
+          cmake --preset android-compute
+          cmake --build --preset android-compute -j2
+      - name: Host and NDK compile checks (no Android device in this job)
+        run: >-
+          ctest --preset android-compute
+          -R '^(expected.reject|erasure.reject|kernelc\.|shader\.(reject|group.reject|preprocessing_profile))'
+      - run: |
+          cmake --install build/android-compute --prefix build/android-sdk
+          cpack --config build/android-compute/CPackConfig.cmake -B build/packages

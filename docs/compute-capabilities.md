@@ -66,6 +66,7 @@ Vulkan 分别查询并启用 FP16 算术、16 位 storage buffer 和 16 位 push
 创建内核时按实际 SPIR-V capability 检查，不满足则返回 Unsupported。
 `Device::info().capabilities` 提供这些能力及工作组/共享内存上限。
 `VulkanOptions::enableFloat16=false` 可显式禁用半精度计算能力。
+同一能力结构的 `float64` 表示 double 算术支持；不支持时，包含 Float64 capability 的内核创建返回 Unsupported。
 
 R16F、RG16F、RGBA16F 是新增的原生图像格式；imageLoad/imageStore 仍使用 float32 向量。
 这与 buffer 中真正的 float16 算术是两条能力路径。

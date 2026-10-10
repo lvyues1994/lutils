@@ -42,10 +42,9 @@ struct CpuDeviceImpl final : Device {
     std::unique_ptr<CpuExecution> execution;
     explicit CpuDeviceImpl(std::unique_ptr<CpuExecution> e) : execution(std::move(e)) {}
     DeviceInfo info() const override {
-        return {"C++17 CPU",
-                true,
-                std::numeric_limits<std::size_t>::max(),
-                {true, true, true, 1024, 65536}};
+        ComputeCapabilities capabilities{true, true, true, 1024, 65536};
+        capabilities.float64 = true;
+        return {"C++17 CPU", true, std::numeric_limits<std::size_t>::max(), capabilities};
     }
     Result<BufferHandle> createBuffer(std::size_t words) override {
         if (words > std::numeric_limits<Word>::max())

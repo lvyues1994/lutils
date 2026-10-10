@@ -11,10 +11,10 @@ set(source "${WORK}/source")
 set(common -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_COMPILER=${COMPILER}")
 if(MODE STREQUAL "source")
     run("${CMAKE_COMMAND}" -S "${source}" -B "${WORK}/consumer" ${common}
-        "-DSOURCE_ROOT=${ROOT}" -DWITH_SHADER=${FULL} -DWITH_OPS=${FULL}
+        "-DSOURCE_ROOT=${ROOT}" -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS}
         "-DLLVM_DIR=${LLVM_DIR}" "-DLUTILS_CLANG_INCLUDE_DIR=${CLANG_INCLUDE}"
         "-DLUTILS_CLANG_CPP_LIBRARY=${CLANG_LIBRARY}"
-        "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
+        "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
 else()
     set(prefix "${WORK}/prefix original")
     run("${CMAKE_COMMAND}" --install "${BUILD}" --prefix "${prefix}")
@@ -39,7 +39,7 @@ else()
     if(status EQUAL 0)
         message(FATAL_ERROR "Unknown required component was accepted")
     endif()
-    if(FULL)
+    if(OPS)
         # This project must use the precompiled conversion without finding shader tools.
         run("${CMAKE_COMMAND}" -S "${source}" -B "${WORK}/ops" ${common}
             "-DCMAKE_PREFIX_PATH=${prefix}" -DWITH_OPS=ON
@@ -49,12 +49,12 @@ else()
         run("${WORK}/ops/consumer")
     endif()
     run("${CMAKE_COMMAND}" -S "${source}" -B "${WORK}/consumer" ${common}
-        "-DCMAKE_PREFIX_PATH=${prefix}" -DWITH_SHADER=${FULL} -DWITH_OPS=${FULL}
-        -DWITH_GPU=${GPU} "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
+        "-DCMAKE_PREFIX_PATH=${prefix}" -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS}
+        -DWITH_GPU=${GPU} "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
 endif()
 run("${CMAKE_COMMAND}" --build "${WORK}/consumer" -j2)
 run("${WORK}/consumer/consumer")
-if(FULL)
+if(TOOLS)
     file(WRITE "${source}/private headers/Factor.hpp" "#pragma once\n#define FACTOR 9.0f\n")
     run("${CMAKE_COMMAND}" --build "${WORK}/consumer" -j2)
     run("${WORK}/consumer/consumer")

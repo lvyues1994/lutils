@@ -3,7 +3,7 @@ if(COMPILER_ID STREQUAL "MSVC")
         "/I${INCLUDE_DIR}" "/DREJECT_CASE=${CASE}" /c "${SOURCE}" "/Fo${OUTPUT}"
         RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
 else()
-    execute_process(COMMAND "${COMPILER}" -std=c++17 -pedantic-errors
+    execute_process(COMMAND "${COMPILER}" ${TARGET_FLAGS} -std=c++17 -pedantic-errors
         "-I${INCLUDE_DIR}" "-DREJECT_CASE=${CASE}" -fsyntax-only "${SOURCE}"
         RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
 endif()

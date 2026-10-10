@@ -92,8 +92,8 @@ Completion 保活命令与导入对象；引用保活不能替代摄像头/解�
 协议等待或交还 release fence。GPU 已提交后若 fence 发布失败，库等待该任务结束后返回错误，输出可能
 已改变；不会假装操作没有执行。CPU 同步或设备执行失败也不提供输出回滚。
 
-Android 后续通过独立 `Memory`/图像适配器接入 `AHardwareBuffer`，当前未实现 Android 后端。
-AHB 外部 YUV 可能仅支持采样读取；这类非线性原生图像需要单独的操作能力与执行路径。
+Android 通过独立 `Memory` 适配器接入 AHardwareBuffer BLOB，详见 [Android 支持](android.md)。
+原生 AHB RGBA/YUV 图像尚未接入；这类资源需要单独的图像布局与执行路径。
 
 ## 验证
 

@@ -5,10 +5,18 @@
 #include <lutils/compute/Vulkan.hpp>
 #include <optional>
 #include <stdexcept>
+#if defined(__ANDROID__)
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#include <android/hardware_buffer.h>
+#include <lutils/compute/AndroidHardwareBuffer.hpp>
+#endif
 #include <vulkan/vulkan.h>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <lutils/compute/LinuxDmaBuf.hpp>
 #define LUTILS_LINUX_DMA_BUF 1
+#endif
+#if defined(__linux__) || defined(__ANDROID__)
+#define LUTILS_EXTERNAL_MEMORY 1
 #endif
 
 namespace lutils::compute {
@@ -89,8 +97,12 @@ struct DeviceState {
     std::uint32_t timestampBits = 0;
     ComputeCapabilities capabilities;
     bool uniformBuffer16 = false;
+#ifdef LUTILS_EXTERNAL_MEMORY
 #ifdef LUTILS_LINUX_DMA_BUF
     PFN_vkGetMemoryFdPropertiesKHR getMemoryFdProperties = nullptr;
+#elif defined(__ANDROID__)
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID getHardwareBufferProperties = nullptr;
+#endif
     PFN_vkImportSemaphoreFdKHR importSemaphoreFd = nullptr;
     PFN_vkGetSemaphoreFdKHR getSemaphoreFd = nullptr;
 #endif
@@ -251,11 +263,19 @@ struct DeviceState {
                         properties.limits.maxComputeWorkGroupInvocations,
                         properties.limits.maxComputeSharedMemorySize};
         uniformBuffer16 = storage16.uniformAndStorageBuffer16BitAccess != VK_FALSE;
+        capabilities.float64 = features.shaderFloat64 != VK_FALSE;
+#ifdef LUTILS_EXTERNAL_MEMORY
 #ifdef LUTILS_LINUX_DMA_BUF
         char const *externalExtensions[] = {VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
                                             VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
                                             VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
                                             VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
+#else
+        char const *externalExtensions[] = {
+            VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
+            VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+            VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
+#endif
         bool external = std::all_of(
             std::begin(externalExtensions), std::end(externalExtensions), [&](char const *name) {
                 return std::any_of(available.begin(), available.end(), [&](auto const &e) {
@@ -273,7 +293,12 @@ struct DeviceState {
                                     VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
             external = (properties.externalSemaphoreFeatures & needed) == needed;
         }
+#ifdef LUTILS_LINUX_DMA_BUF
         capabilities.externalDmaBuf = external;
+#else
+        external = external && AndroidHardwareBufferMemory::available();
+        capabilities.externalAndroidHardwareBuffer = external;
+#endif
         if (external)
             enabledExtensions.insert(enabledExtensions.end(), std::begin(externalExtensions),
                                      std::end(externalExtensions));
@@ -281,15 +306,25 @@ struct DeviceState {
         d.enabledExtensionCount = static_cast<std::uint32_t>(enabledExtensions.size());
         d.ppEnabledExtensionNames = enabledExtensions.data();
         check(vkCreateDevice(physical, &d, nullptr, &device), "vkCreateDevice");
+#ifdef LUTILS_EXTERNAL_MEMORY
+        if (capabilities.externalDmaBuf || capabilities.externalAndroidHardwareBuffer) {
 #ifdef LUTILS_LINUX_DMA_BUF
-        if (capabilities.externalDmaBuf) {
             getMemoryFdProperties = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
                 vkGetDeviceProcAddr(device, "vkGetMemoryFdPropertiesKHR"));
+            if (!getMemoryFdProperties)
+                throw Failure{"dma-buf entry point unavailable"};
+#else
+            getHardwareBufferProperties =
+                reinterpret_cast<PFN_vkGetAndroidHardwareBufferPropertiesANDROID>(
+                    vkGetDeviceProcAddr(device, "vkGetAndroidHardwareBufferPropertiesANDROID"));
+            if (!getHardwareBufferProperties)
+                throw Failure{"AHardwareBuffer entry point unavailable"};
+#endif
             importSemaphoreFd = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
                 vkGetDeviceProcAddr(device, "vkImportSemaphoreFdKHR"));
             getSemaphoreFd = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
                 vkGetDeviceProcAddr(device, "vkGetSemaphoreFdKHR"));
-            if (!getMemoryFdProperties || !importSemaphoreFd || !getSemaphoreFd)
+            if (!importSemaphoreFd || !getSemaphoreFd)
                 throw Failure{"dma-buf entry points unavailable"};
         }
 #endif
@@ -307,13 +342,15 @@ struct VulkanBuffer final : Buffer {
     std::size_t logicalBytes = 0;
     bool coherent = false;
     bool initialized = false;
-#ifdef LUTILS_LINUX_DMA_BUF
-    std::shared_ptr<DmaBufMemory> external;
+#ifdef LUTILS_EXTERNAL_MEMORY
+    std::shared_ptr<ExternalMemory> external;
     bool aliases(Buffer const &other) const noexcept override {
         auto const *b = dynamic_cast<VulkanBuffer const *>(&other);
         return this == &other || (external && b && b->external && external->aliases(*b->external));
     }
     bool writable() const noexcept override { return !external || external->writable(); }
+#endif
+#ifdef LUTILS_LINUX_DMA_BUF
     Result<void> importDmaBuf(std::shared_ptr<DmaBufMemory> source) {
         if (!state->capabilities.externalDmaBuf)
             return Error{
@@ -397,6 +434,83 @@ struct VulkanBuffer final : Buffer {
         words = bytes / 4;
         logicalBytes = bytes;
         initialized = true; // Never initialize or clear an external allocation.
+        return {};
+    }
+#endif
+#if defined(__ANDROID__)
+    Result<void> importHardwareBuffer(std::shared_ptr<AndroidHardwareBufferMemory> source) {
+        if (!state->capabilities.externalAndroidHardwareBuffer)
+            return Error{ErrorCode::Unsupported,
+                         "Vulkan AHardwareBuffer or sync-file interop unavailable"};
+        auto const bytes = source->byteCount();
+        if (!bytes || bytes % 4 || bytes > state->properties.limits.maxStorageBufferRange)
+            return Error{
+                ErrorCode::Unsupported,
+                "AHardwareBuffer capacity exceeds storage buffer limits or is not word aligned"};
+        auto query = structure<VkPhysicalDeviceExternalBufferInfo>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO);
+        query.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        query.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+        auto properties =
+            structure<VkExternalBufferProperties>(VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES);
+        vkGetPhysicalDeviceExternalBufferProperties(state->physical, &query, &properties);
+        if (!(properties.externalMemoryProperties.externalMemoryFeatures &
+              VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
+            return Error{ErrorCode::Unsupported,
+                         "AHardwareBuffer storage buffers are not importable"};
+        auto ext = structure<VkExternalMemoryBufferCreateInfo>(
+            VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
+        ext.handleTypes = query.handleType;
+        auto create = structure<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+        create.pNext = &ext;
+        create.size = bytes;
+        create.usage = query.usage;
+        create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateBuffer(state->device, &create, nullptr, &buffer),
+              "create AHardwareBuffer buffer");
+        auto requirements =
+            structure<VkMemoryRequirements2>(VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2);
+        auto dedicatedRequirements = structure<VkMemoryDedicatedRequirements>(
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
+        requirements.pNext = &dedicatedRequirements;
+        auto info = structure<VkBufferMemoryRequirementsInfo2>(
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2);
+        info.buffer = buffer;
+        vkGetBufferMemoryRequirements2(state->device, &info, &requirements);
+        auto hardware = structure<VkAndroidHardwareBufferPropertiesANDROID>(
+            VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID);
+        check(state->getHardwareBufferProperties(state->device, source->nativeBuffer(), &hardware),
+              "query AHardwareBuffer properties");
+        if (requirements.memoryRequirements.size > hardware.allocationSize)
+            return Error{ErrorCode::Unsupported,
+                         "AHardwareBuffer allocation is smaller than Vulkan requirements"};
+        auto const types = requirements.memoryRequirements.memoryTypeBits & hardware.memoryTypeBits;
+        std::uint32_t index = 0;
+        while (index < state->memory.memoryTypeCount && !(types & (1u << index)))
+            ++index;
+        if (index == state->memory.memoryTypeCount)
+            return Error{ErrorCode::Unsupported, "AHardwareBuffer has no compatible memory type"};
+        auto import = structure<VkImportAndroidHardwareBufferInfoANDROID>(
+            VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID);
+        import.buffer = source->nativeBuffer();
+        auto dedicated = structure<VkMemoryDedicatedAllocateInfo>(
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
+        dedicated.buffer = buffer;
+        if (dedicatedRequirements.requiresDedicatedAllocation ||
+            (properties.externalMemoryProperties.externalMemoryFeatures &
+             VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT))
+            import.pNext = &dedicated;
+        auto allocation = structure<VkMemoryAllocateInfo>(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+        allocation.pNext = &import;
+        allocation.allocationSize = hardware.allocationSize;
+        allocation.memoryTypeIndex = index;
+        check(vkAllocateMemory(state->device, &allocation, nullptr, &memory),
+              "import AHardwareBuffer memory");
+        check(vkBindBufferMemory(state->device, buffer, memory, 0), "bind AHardwareBuffer memory");
+        external = std::move(source);
+        words = bytes / 4;
+        logicalBytes = bytes;
+        initialized = true;
         return {};
     }
 #endif
@@ -810,7 +924,7 @@ struct ReadbackResult {
     ReadbackToken token;
     std::shared_ptr<std::vector<Word>> words;
 };
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
 struct ExternalSubmission {
     struct Resource {
         std::shared_ptr<VulkanBuffer> buffer;
@@ -839,7 +953,8 @@ struct ExternalSubmission {
                 return;
             }
             if (r.buffer->aliases(*buffer))
-                throw Failure{"use one canonical imported buffer per dma-buf in a submission"};
+                throw Failure{
+                    "use one canonical imported buffer per external allocation in a submission"};
         }
         resources.push_back({std::move(buffer), access});
     }
@@ -937,7 +1052,7 @@ struct Submission final : VulkanCompletion {
     bool timed;
     std::optional<Error> failure;
     double elapsed = 0;
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     std::unique_ptr<ExternalSubmission> external;
 #endif
     explicit Submission(std::shared_ptr<SlotPool> p)
@@ -980,7 +1095,7 @@ struct Submission final : VulkanCompletion {
             }
         }
         completed = true;
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
         external.reset();
 #endif
         retained.clear();
@@ -1168,7 +1283,7 @@ struct CommandRecorder {
 };
 void record(Submission &submission) {
     auto &slot = *submission.slot;
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     submission.external = std::make_unique<ExternalSubmission>(slot.state);
     submission.external->prepare(submission.retained);
 #endif
@@ -1195,7 +1310,7 @@ void record(Submission &submission) {
         vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, slot.queries, 0);
     }
     orderedBarrier(slot.command);
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     submission.external->ownership(slot.command, true);
 #endif
     CommandRecorder recorder{submission};
@@ -1212,14 +1327,14 @@ void record(Submission &submission) {
             VK_ACCESS_HOST_READ_BIT);
     if (slot.queries)
         vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, slot.queries, 1);
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     submission.external->ownership(slot.command, false);
 #endif
     check(vkEndCommandBuffer(slot.command), "end command buffer");
     auto submit = structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &slot.command;
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     submission.external->configure(submit);
 #endif
     check(vkQueueSubmit(slot.state->queue, 1, &submit, slot.fence), "submit queue");
@@ -1230,7 +1345,7 @@ void record(Submission &submission) {
         else
             static_cast<VulkanBuffer *>(resource.get())->initialized = true;
     }
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
     try {
         submission.external->publish();
     } catch (Failure const &e) {
@@ -1263,6 +1378,19 @@ struct VulkanDevice final : Device {
                 state->properties.limits.maxStorageBufferRange, state->capabilities};
     }
     Result<BufferHandle> importMemory(MemoryHandle const &memory) override {
+#if defined(__ANDROID__)
+        if (auto source = std::dynamic_pointer_cast<AndroidHardwareBufferMemory>(memory)) {
+            try {
+                auto result = std::make_shared<VulkanBuffer>(state);
+                auto imported = result->importHardwareBuffer(std::move(source));
+                if (!imported)
+                    return imported.error();
+                return BufferHandle{std::move(result)};
+            } catch (Failure const &e) {
+                return deviceError(e);
+            }
+        }
+#endif
 #ifdef LUTILS_LINUX_DMA_BUF
         if (auto source = std::dynamic_pointer_cast<DmaBufMemory>(memory)) {
             try {
@@ -1406,7 +1534,7 @@ struct VulkanDevice final : Device {
         return *data.value();
     }
     Result<void> validateCommand(Upload const &c) const {
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
         if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
             return Error{ErrorCode::Unsupported,
                          "external buffers use direct dispatch or CPU mapping, not uploads"};
@@ -1416,7 +1544,7 @@ struct VulkanDevice final : Device {
                    : Result<void>{Error{ErrorCode::InvalidArgument, "foreign upload buffer"}};
     }
     Result<void> validateCommand(Readback const &c) const {
-#ifdef LUTILS_LINUX_DMA_BUF
+#ifdef LUTILS_EXTERNAL_MEMORY
         if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
             return Error{ErrorCode::Unsupported,
                          "external buffers use direct dispatch or CPU mapping, not readbacks"};

@@ -123,31 +123,6 @@ struct DmaMemory final : DmaBufMemory {
     }
 };
 } // namespace
-FileDescriptor::~FileDescriptor() {
-    if (fd_ >= 0)
-        close(fd_);
-}
-FileDescriptor::FileDescriptor(FileDescriptor &&other) noexcept : fd_(other.release()) {}
-FileDescriptor &FileDescriptor::operator=(FileDescriptor &&other) noexcept {
-    if (this != &other) {
-        if (fd_ >= 0)
-            close(fd_);
-        fd_ = other.release();
-    }
-    return *this;
-}
-int FileDescriptor::release() noexcept { return std::exchange(fd_, -1); }
-Result<FileDescriptor> FileDescriptor::duplicate(int fd) {
-    if (fd < 0)
-        return Error{ErrorCode::InvalidArgument, "invalid file descriptor"};
-    int copy;
-    do {
-        copy = fcntl(fd, F_DUPFD_CLOEXEC, 0);
-    } while (copy < 0 && errno == EINTR);
-    if (copy < 0)
-        return osError("duplicate descriptor");
-    return FileDescriptor{copy};
-}
 Result<std::shared_ptr<DmaBufMemory>> DmaBufMemory::import(int fd) {
     auto copy = FileDescriptor::duplicate(fd);
     if (!copy)
