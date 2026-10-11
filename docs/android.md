@@ -114,6 +114,23 @@ GPU 原生采样也可用于自定义 C++ 算子：`kernel::SamplerBinding<slot>
 RGBA 返回 RGBA；YUV 返回 `(Cr/255, Y/255, Cb/255, 1)`，使用 `RGB_IDENTITY` 保留原始码值。
 运行时按外部格式缓存 immutable sampler 和 pipeline，缓存不持有 AImage 帧。
 
+三种 Binding 都可直接 attach 设备句柄。例如 `backend` 持有 Vulkan Device，`shader.source`
+为 `SamplerBinding`，`shader.destination` 为对应元素类型的 `BufferBinding`：
+
+```cpp
+auto input = backend.device().importImage(image.value().nativeStorage());
+auto target = backend.device().importMemory(outputMemory); // AHB BLOB
+// 检查 Result；其他参数和绑定按算法设置。
+shader.source.attach(input.value());
+shader.destination.attach(target.value());
+auto done = backend.execute(shader, {width, height, 1});
+```
+
+此路径直接使用导入资源，无隐式 upload/readback。binding、已录制命令和在途提交都保留资源引用；
+调用方不再使用某帧时应解除绑定并释放自己的句柄。传给自定义采样算子的坐标对应完整 AHB allocation，
+AImage 的可见裁剪区域需由算子应用 `visibleRectangle()`。原生图像的 storage 写入能力没有增加，
+不支持的 `ImageBinding` 操作仍会被后端拒绝。
+
 ## 同步与生命周期
 
 外部生产者的 acquire fence 通过 `importSyncFile(fd, access)` 借入并复制；库合并已有依赖。
@@ -162,6 +179,11 @@ NDK r28 默认生成支持 16 KB 页的 ELF，见 [Android 页大小支持说明
 - Linux CTest 共 86 项：84 项通过，2 项真实 dma-buf 测试在沙箱跳过。
   新增采样与 image copy 经 Lavapipe 的 Vulkan validation 检查，无警告或错误。
 - CPU 原生映射边界与裁剪填充通过 ASan、UBSan 和 LeakSanitizer 检查。
+
+架构修复补充回归：类型化 binding 直接绑定 AHB RGBA/YUV 输入和 BLOB 输出，
+YUV AImage 在释放调用方 reader/resource 后由提交独立保活，结果及零 staging/readback 计数通过。
+合法 C++ 字段名 `sample`、嵌套 Uniform/结构体和设备句柄的错误绑定案例通过 CPU/Vulkan 检查；
+移动后的 Android SDK 消费者也通过直接句柄 attach 的编译与运行。
 
 Android 测试 ELF 的 LOAD 对齐为 16 KB；本次设备实际页大小为 4 KB，尚无 16 KB 设备运行结果。
 Android Vulkan validation layer 未在本次启用。新增 CI 作交叉编译与主机工具检查，不包含连接设备测试，

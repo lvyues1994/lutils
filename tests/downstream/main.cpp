@@ -90,5 +90,11 @@ int main() {
     take(backend.downloadBuffer(&outputBuffer));
     for (int i = 0; i < 7; ++i)
         check(outputBuffer[i] == float(i) + FACTOR);
+    auto resident = take(backend.device().createBuffer(7));
+    kernel.output.attach(resident);
+    take(take(backend.execute(kernel, {7, 1, 1}))->wait());
+    auto words = take(backend.device().download(resident));
+    for (std::size_t i = 0; i < words.size(); ++i)
+        check(co::StorageCodec<float>::read(&words[i]) == float(i) + FACTOR);
 #endif
 }

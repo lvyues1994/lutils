@@ -348,10 +348,14 @@ struct Backend {
     }
     template <class T, Word S>
     Result<BufferHandle> resolve(kernel::BufferBinding<T, S> const &binding) {
+        if (binding.residentBuffer())
+            return binding.residentBuffer();
         return find(binding.resource() ? binding.resource()->identity() : nullptr, {});
     }
     template <kernel::ImageFormat G, kernel::Dim D, class P, Word S>
     Result<BufferHandle> resolve(kernel::ImageBinding<G, D, P, S> const &binding) {
+        if (binding.residentBuffer())
+            return binding.residentBuffer();
         auto *r = binding.resource();
         if (!r)
             return Error{ErrorCode::InvalidArgument, "unbound image"};
@@ -362,6 +366,8 @@ struct Backend {
         return r ? Result<void>{} : Result<void>{r.error()};
     }
     template <Word S> Result<BufferHandle> resolve(kernel::SamplerBinding<S> const &binding) {
+        if (binding.residentBuffer())
+            return binding.residentBuffer();
         kernel::ImageBinding<kernel::ImageFormat::RGBA8, kernel::Dim::D2, kernel::cpu::RGBA8, S>
             image;
         image.attach(binding.resource());

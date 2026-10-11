@@ -53,35 +53,34 @@ struct DeviceRegions final : RegionExecutor {
             co::Word background = 0;
             for (std::size_t b = 0; b < p.background.size(); ++b)
                 background |= std::to_integer<co::Word>(p.background[b]) << (b * 8);
-            std::vector<co::Word> params{extent.x, extent.y, 1, 0};
-            for (auto value : {first,
-                               count,
-                               width,
-                               viewport.x + p.sourceX / pixelBytes * step,
-                               viewport.y + p.sourceY * step,
-                               std::size_t{description.width},
-                               std::size_t{description.height},
-                               pixelBytes,
-                               step,
-                               i == 0   ? std::size_t{1}
-                               : i == 1 ? std::size_t{2}
-                                        : std::size_t{0},
-                               d.offset,
-                               std::max(static_cast<std::size_t>(d.stride), p.rowBytes),
-                               p.destinationX,
-                               p.destinationY,
-                               p.copyBytes,
-                               p.copyRows,
-                               p.rowBytes,
-                               p.rows,
-                               std::size_t{background},
-                               std::max<std::size_t>(1, p.background.size())})
-                params.push_back(static_cast<co::Word>(value));
+            kernels::NativeRegion shader;
+            auto &params = shader.parameters.value;
+            params.firstWord = static_cast<co::Word>(first);
+            params.wordCount = static_cast<co::Word>(count);
+            params.gridWidth = extent.x;
+            params.sourceX = static_cast<co::Word>(viewport.x + p.sourceX / pixelBytes * step);
+            params.sourceY = static_cast<co::Word>(viewport.y + p.sourceY * step);
+            params.sourceWidth = description.width;
+            params.sourceHeight = description.height;
+            params.pixelBytes = static_cast<co::Word>(pixelBytes);
+            params.subsample = static_cast<co::Word>(step);
+            params.channel = i == 0 ? 1u : i == 1 ? 2u : 0u;
+            params.destinationOffset = static_cast<co::Word>(d.offset);
+            params.destinationStride =
+                static_cast<co::Word>(std::max(static_cast<std::size_t>(d.stride), p.rowBytes));
+            params.destinationX = static_cast<co::Word>(p.destinationX);
+            params.destinationY = static_cast<co::Word>(p.destinationY);
+            params.copyBytes = static_cast<co::Word>(p.copyBytes);
+            params.copyRows = static_cast<co::Word>(p.copyRows);
+            params.rowBytes = static_cast<co::Word>(p.rowBytes);
+            params.rows = static_cast<co::Word>(p.rows);
+            params.background = background;
+            params.patternBytes = static_cast<co::Word>(std::max<std::size_t>(1, p.background.size()));
             auto recorded =
                 commands.dispatch({sampledKernel,
                                    {input.value().nativeBinding(),
                                     output.value().objects()[d.object]->residentBuffer()},
-                                   std::move(params),
+                                   co::KernelTraits<kernels::NativeRegion>::pack(shader, extent),
                                    extent});
             if (!recorded)
                 return recorded.error();
@@ -184,16 +183,29 @@ struct DeviceRegions final : RegionExecutor {
             co::Word background = 0;
             for (std::size_t b = 0; b < p.background.size(); ++b)
                 background |= std::to_integer<co::Word>(p.background[b]) << (b * 8);
-            std::vector<co::Word> params{extent.x, extent.y, 1, 0};
-            for (auto value :
-                 {first, count, width, s.offset, static_cast<std::size_t>(s.stride), p.sourceX,
-                  p.sourceY, d.offset, std::max(static_cast<std::size_t>(d.stride), p.rowBytes),
-                  p.destinationX, p.destinationY, p.copyBytes, p.copyRows, p.rowBytes, p.rows,
-                  static_cast<std::size_t>(background),
-                  std::max<std::size_t>(1, p.background.size())})
-                params.push_back(static_cast<co::Word>(value));
+            kernels::RegionBytes shader;
+            auto &params = shader.parameters.value;
+            params.firstWord = static_cast<co::Word>(first);
+            params.wordCount = static_cast<co::Word>(count);
+            params.gridWidth = extent.x;
+            params.sourceOffset = static_cast<co::Word>(s.offset);
+            params.sourceStride = static_cast<co::Word>(s.stride);
+            params.sourceX = static_cast<co::Word>(p.sourceX);
+            params.sourceY = static_cast<co::Word>(p.sourceY);
+            params.destinationOffset = static_cast<co::Word>(d.offset);
+            params.destinationStride =
+                static_cast<co::Word>(std::max(static_cast<std::size_t>(d.stride), p.rowBytes));
+            params.destinationX = static_cast<co::Word>(p.destinationX);
+            params.destinationY = static_cast<co::Word>(p.destinationY);
+            params.copyBytes = static_cast<co::Word>(p.copyBytes);
+            params.copyRows = static_cast<co::Word>(p.copyRows);
+            params.rowBytes = static_cast<co::Word>(p.rowBytes);
+            params.rows = static_cast<co::Word>(p.rows);
+            params.background = background;
+            params.patternBytes = static_cast<co::Word>(std::max<std::size_t>(1, p.background.size()));
             auto recorded = commands.dispatch(
-                {kernel, {sourceBuffer, destinationBuffer}, std::move(params), extent});
+                {kernel, {sourceBuffer, destinationBuffer},
+                 co::KernelTraits<kernels::RegionBytes>::pack(shader, extent), extent});
             if (!recorded)
                 return recorded.error();
         }

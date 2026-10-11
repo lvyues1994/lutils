@@ -1,9 +1,11 @@
 #pragma once
 #include <array>
 #include <limits>
+#include <memory>
 #include <lutils/compute/Pixel.hpp>
 #include <lutils/compute/Workgroup.hpp>
 #include <vector>
+#include <utility>
 
 #if defined(__clang__)
 #define LUTILS_KERNEL [[clang::annotate("kernel")]]
@@ -12,6 +14,7 @@
 #endif
 
 namespace lutils::compute {
+struct Buffer;
 namespace kernel {
 enum class Dim { D1 = 1, D2 = 2, D3 = 3 };
 template <Dim> struct DimTraits;
@@ -56,8 +59,17 @@ namespace kernel {
 template <class T, uint Slot> struct BufferBinding {
     static constexpr uint slot = Slot;
     using Value = T;
-    void attach(BufferResource<T> *resource) { resource_ = resource; }
+    void attach(BufferResource<T> *resource) {
+        resident_.reset();
+        resource_ = resource;
+    }
+    // Retains an already-created/imported device resource; never uploads it.
+    void attach(std::shared_ptr<Buffer> resource) {
+        resource_ = nullptr;
+        resident_ = std::move(resource);
+    }
     BufferResource<T> *resource() const { return resource_; }
+    std::shared_ptr<Buffer> const &residentBuffer() const noexcept { return resident_; }
     void cpuView(T *data, std::size_t count) {
         data_ = data;
         count_ = count;
@@ -70,6 +82,7 @@ template <class T, uint Slot> struct BufferBinding {
 
   private:
     BufferResource<T> *resource_ = nullptr;
+    std::shared_ptr<Buffer> resident_;
     T *data_ = nullptr;
     std::size_t count_ = 0;
 };
@@ -119,8 +132,16 @@ template <ImageFormat G, Dim D, class P, uint Slot> struct ImageBinding {
     static constexpr uint slot = Slot;
     static constexpr auto format = G;
     static constexpr auto dimensions = D;
-    void attach(BufferResource<P, D> *resource) { resource_ = resource; }
+    void attach(BufferResource<P, D> *resource) {
+        resident_.reset();
+        resource_ = resource;
+    }
+    void attach(std::shared_ptr<Buffer> resource) {
+        resource_ = nullptr;
+        resident_ = std::move(resource);
+    }
     BufferResource<P, D> *resource() const { return resource_; }
+    std::shared_ptr<Buffer> const &residentBuffer() const noexcept { return resident_; }
     void cpuView(void *data, Index extent) {
         data_ = static_cast<unsigned char *>(data);
         extent_ = extent;
@@ -141,6 +162,7 @@ template <ImageFormat G, Dim D, class P, uint Slot> struct ImageBinding {
 
   private:
     BufferResource<P, D> *resource_ = nullptr;
+    std::shared_ptr<Buffer> resident_;
     unsigned char *data_ = nullptr;
     Index extent_{};
 };
@@ -163,7 +185,9 @@ auto imageSize(ImageBinding<G, D, P, S> const &image) {
 template <uint Slot> struct SamplerBinding {
     static constexpr uint slot = Slot;
     void attach(BufferResource<cpu::RGBA8, Dim::D2> *resource) { image_.attach(resource); }
+    void attach(std::shared_ptr<Buffer> resource) { image_.attach(std::move(resource)); }
     BufferResource<cpu::RGBA8, Dim::D2> *resource() const { return image_.resource(); }
+    std::shared_ptr<Buffer> const &residentBuffer() const noexcept { return image_.residentBuffer(); }
     void cpuView(void *data, ivec2 extent) { image_.cpuView(data, extent); }
     vec4 sample(vec2 uv) const {
         auto n = image_.extent();

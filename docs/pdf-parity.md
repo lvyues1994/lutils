@@ -75,7 +75,13 @@ Clang、CPU 包装和调用方，包括目录、目标及依赖带来的配置�
 ## 资源与执行契约
 
 `BufferResource<T, Dim>` 拥有真实 T 对象；默认 D1，图像也支持 D2/D3。
-`attach` 借用资源，借用必须持续到命令录制结束。移动资源后需要把绑定重新 attach 到新对象。
+`attach(BufferResource*)` 借用主机资源，借用必须持续到命令录制结束。移动资源后需要重新 attach。
+`BufferBinding`、`ImageBinding`、`SamplerBinding` 也接受 `attach(BufferHandle)`，持有已创建或导入的
+设备资源，直接复用同一 `record/execute` 路径。两种 attach 互相替换；nullptr 或空句柄解除绑定。
+录制后命令保留资源，调用方可以解除绑定或释放自己的句柄。长期保留绑定也会延长 AImage 帧的租约。
+原生资源先通过 `backend.device().importMemory/importImage` 导入；attach 本身不上传、不转换布局。
+缓冲元素必须已符合 `StorageCodec<T>` 的 std430 布局。
+资源格式、维数、元素 stride、只读与别名在录制时校验，设备归属和后端 usage 在提交前校验。
 `Backend` 拥有设备和资源的设备副本；失效主机资源对应的副本会在后续上传时清理，
 已录制/在途命令仍保留自己的句柄。上传失败不会发布可用副本。
 
@@ -101,6 +107,7 @@ execute 的范围是工作项数量。普通内核由 Vulkan 向上取工作组�
 支持 dot、cross、length、normalize、reflect、min/max/clamp、sqrt、abs、pow、floor/ceil、sin/cos。
 
 Buffer 可存标量、向量和无继承的平凡聚合结构体，结构体可嵌套并包含非空 std::array。
+用户结构体字段在 GLSL 中使用内部名称，因此 `sample` 等合法 C++ 字段名不受 GLSL 关键字限制。
 生成的 std430 codec 逐字段打包，正确处理 vec3、数组 stride 和结构体 padding。
 CPU 包装每次 dispatch 解码一次，完成后写回；Word buffer 可直接使用已有 Word 对象。
 不把 uint32 存储强制转换为 float 对象。

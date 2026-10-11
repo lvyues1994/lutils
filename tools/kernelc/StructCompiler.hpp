@@ -28,6 +28,7 @@ struct StructCompiler {
     };
     std::map<clang::Type const *, Type> types;
     std::vector<Record> records;
+    std::map<FieldDecl const *, std::string> fieldNames;
     std::vector<Resource> resources;
     std::vector<UniformInfo> uniforms;
     std::vector<FieldDecl const *> constants;
@@ -140,6 +141,7 @@ struct StructCompiler {
                 auto ft = type(f->getType());
                 out.align = std::max(out.align, ft.align);
                 out.bytes = alignTo(out.bytes, ft.align);
+                fieldNames.emplace(f, "m" + std::to_string(record.fields.size()));
                 record.fields.push_back({f, out.bytes});
                 out.bytes += ft.bytes;
             }
@@ -507,7 +509,14 @@ struct StructCompiler {
                 touch(e, write);
                 return it->second;
             }
-            return "(" + expr(m->getBase(), write) + ")." + m->getMemberDecl()->getNameAsString();
+            auto base = expr(m->getBase(), write);
+            auto const *field = dyn_cast<FieldDecl>(m->getMemberDecl());
+            auto const found = fieldNames.find(field);
+            // User fields are independent of GLSL keywords; vector components
+            // retain their built-in x/y/z/w names.
+            auto member = found == fieldNames.end() ? m->getMemberDecl()->getNameAsString()
+                                                     : found->second;
+            return "(" + base + ")." + member;
         }
         if (auto *c = dyn_cast<CXXConstructExpr>(e)) {
             if (c->getNumArgs() == 1 &&
@@ -809,7 +818,7 @@ struct StructCompiler {
         for (auto const &r : records) {
             out << "struct " << r.type.glsl << " {\n";
             for (auto const &f : r.fields)
-                out << declaration(type(f.first->getType()), f.first->getNameAsString()) << ";\n";
+                out << declaration(type(f.first->getType()), fieldNames.at(f.first)) << ";\n";
             out << "};\n";
         }
         if (!shared.empty()) {

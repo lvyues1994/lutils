@@ -38,11 +38,13 @@
 #include "game_of_life.hpp"
 #include "layout.hpp"
 #include "line.hpp"
+#include "member_names.hpp"
 #include "nearest_sample.hpp"
 #include "sphere_tracer.hpp"
 #include "typed_add.hpp"
 #include "visualize_rays.hpp"
 #include "volume.hpp"
+#include <lutils/compute/Memory.hpp>
 #ifdef LUTILS_TEST_VULKAN
 #include <lutils/compute/Vulkan.hpp>
 #endif
@@ -85,6 +87,25 @@ void layouts(Backend &backend) {
         check(vectors[i] == vec3{3.0f, 2.0f, 1.0f});
     }
 }
+void memberNames(Backend &backend) {
+    BufferResource<member_names::Value> input{5}, output{5};
+    for (int i = 0; i < 5; ++i)
+        input[i] = {{float(i), {{1u, 2u}}}, {3.0f, 4.0f, 5.0f}, 6u};
+    require(backend.uploadBuffer(&input));
+    require(backend.uploadBuffer(&output));
+    member_names::Names shader;
+    shader.source.attach(&input);
+    shader.destination.attach(&output);
+    shader.settings = member_names::Inner{2.0f, {{0u, 0u}}};
+    require(require(backend.execute(shader, {5, 1, 1}))->wait());
+    require(backend.downloadBuffer(&output));
+    for (int i = 0; i < 5; ++i) {
+        check(output[i].output.sample == float(i) + 2.0f);
+        check(output[i].output.input == std::array<uint, 2>{{1u, 5u}});
+        check(output[i].filter == vec3{float(i) + 5.0f, 4.0f, 5.0f});
+        check(output[i].m0 == 13u);
+    }
+}
 template <ImageFormat F, class K> void formatCopy(Backend &backend) {
     using Traits = GPUFormatTraits<F>;
     constexpr Word count = 9;
@@ -101,11 +122,12 @@ template <ImageFormat F, class K> void formatCopy(Backend &backend) {
             pixel[c] = saturated<C>(double(value) + double(c) * 0.1);
         Traits::store(bytes + i * Traits::bytes, pixel);
     }
-    auto kernel = require(backend.device().createKernel(KernelTraits<K>::source()));
+    K shader;
+    shader.input.attach(input);
+    shader.output.attach(output);
     CommandList commands;
     require(commands.upload(input, words));
-    require(commands.dispatch(
-        {kernel, {input, output}, KernelTraits<K>::pack(K{}, {count, 1, 1}), {count, 1, 1}}));
+    require(backend.record(commands, shader, {count, 1, 1}));
     auto token = require(commands.readback(output));
     auto done = require(backend.device().submit(commands));
     auto actual = require(done->readback(token));
@@ -255,6 +277,24 @@ void samplingAndCopy(Backend &backend) {
         check(std::abs(output[i].x - float(i * 47) / 255.0f) < 0.00001f);
         check(output[i].y == 0 && output[i].z == 1 && output[i].w == 1);
     }
+    auto imageHandle = require(backend.resolve(shader.image));
+    auto outputHandle = require(backend.resolve(shader.output));
+    shader.image.attach(imageHandle);
+    shader.output.attach(outputHandle);
+    check(!shader.image.resource() && !shader.output.resource());
+    require(require(backend.execute(shader, {6, 1, 1}))->wait());
+    require(backend.downloadBuffer(&output));
+    for (std::size_t i = 0; i < 6; ++i)
+        check(std::abs(output[i].x - float(i * 47) / 255.0f) < 0.00001f);
+    shader.image.attach(outputHandle);
+    check(!backend.execute(shader, {6, 1, 1})); // buffer cannot be sampled
+    shader.image.attach(&pixels);
+    check(!shader.image.residentBuffer());
+    shader.image.attach(BufferHandle{});
+    check(!backend.execute(shader, {6, 1, 1})); // no stale host binding
+    shader.image.attach(imageHandle);
+    shader.image.attach(nullptr);
+    check(!backend.execute(shader, {6, 1, 1}));
     auto &device = backend.device();
     auto source = require(device.createImage({kernel::gpu::RGBA8, 2, {2, 3, 1}}));
     auto destination = require(device.createImage({kernel::gpu::RGBA8, 2, {4, 4, 1}}));
@@ -283,6 +323,93 @@ void samplingAndCopy(Backend &backend) {
     bad.bindings[0] = Access::Write;
     check(!device.createKernel(bad));
 }
+void residentBindings(Backend &backend) {
+    auto &device = backend.device();
+    BufferResource<float> host{3};
+    host[0] = 1; host[1] = 2; host[2] = 3;
+    require(backend.uploadBuffer(&host));
+    auto input = require(device.createBuffer(3));
+    auto output = require(device.createBuffer(3));
+    auto memory = require(bufferMemory(input));
+    test_pdf::FloatAdder shader;
+    shader.A.attach(&host);
+    shader.A.attach(require(device.importMemory(memory)));
+    shader.B.attach(&host);
+    shader.C.attach(output);
+    check(!shader.A.resource() && shader.A.residentBuffer() == input);
+    CommandList commands;
+    std::vector<Word> words(3);
+    for (std::size_t i = 0; i < 3; ++i)
+        StorageCodec<float>::write(&words[i], float(i) + 4.0f);
+    require(commands.upload(input, words));
+    require(backend.record(commands, shader, {3, 1, 1}));
+    auto token = require(commands.readback(output));
+    std::weak_ptr<Buffer> lifetime = input;
+    shader = {};
+    input.reset();
+    memory.reset();
+    output.reset();
+    check(!lifetime.expired());
+    auto done = require(device.submit(commands));
+    auto result = require(done->readback(token));
+    for (std::size_t i = 0; i < 3; ++i)
+        check(StorageCodec<float>::read(&(*result)[i]) == 5.0f + float(i) * 2.0f);
+    commands = {};
+    done.reset();
+    check(lifetime.expired());
+
+    shader.A.attach(&host);
+    shader.B.attach(&host);
+    auto destination = require(device.createBuffer(3));
+    shader.C.attach(destination);
+    shader.A.attach(require(device.createBufferBytes(6)));
+    check(!backend.execute(shader, {3, 1, 1})); // element stride
+    shader.A.attach(require(device.createImage({kernel::gpu::RGBA8, 2, {1, 1, 1}})));
+    check(!backend.execute(shader, {1, 1, 1})); // image is not a buffer
+    shader.A.attach(destination);
+    check(!backend.execute(shader, {3, 1, 1})); // writable alias
+    shader.A.attach(&host);
+    check(!shader.A.residentBuffer());
+    shader.A.attach(BufferHandle{});
+    check(!backend.execute(shader, {3, 1, 1}));
+    shader.A.attach(&host);
+
+    struct ReadOnly final : Buffer {
+        std::size_t wordCount() const noexcept override { return 3; }
+        bool writable() const noexcept override { return false; }
+    };
+    shader.C.attach(std::make_shared<ReadOnly>());
+    CommandList rejected;
+    check(!backend.record(rejected, shader, {3, 1, 1}));
+    check(rejected.commands().empty());
+    shader.C.attach(destination);
+    auto foreign = require(createCpuDevice());
+    shader.A.attach(require(foreign->createBuffer(3)));
+    CommandList invalidDevice;
+    require(invalidDevice.upload(destination, {1, 2, 3}));
+    require(backend.record(invalidDevice, shader, {3, 1, 1}));
+    check(!device.submit(invalidDevice));
+    check(require(device.download(destination)) == std::vector<Word>(3, 0));
+
+    test_pdf::Line line;
+    auto validImage = require(device.createImage({kernel::gpu::RG16I, 1, {3, 1, 1}}));
+    line.image.attach(validImage);
+    line.image.attach(require(device.createImage({kernel::gpu::RG16I, 2, {3, 1, 1}})));
+    check(!backend.execute(line, {3, 1, 1})); // dimensions
+    line.image.attach(require(device.createImage({kernel::gpu::RGBA8, 1, {3, 1, 1}})));
+    check(!backend.execute(line, {3, 1, 1})); // format
+    line.image.attach(destination);
+    check(!backend.execute(line, {3, 1, 1})); // buffer is not an image
+    BufferResource<kernel::cpu::RG16I> pixels{3};
+    require(backend.uploadImage<kernel::gpu::RG16I>(&pixels));
+    line.image.attach(&pixels);
+    check(!line.image.residentBuffer());
+    line.image.attach(BufferHandle{});
+    check(!backend.execute(line, {3, 1, 1}));
+    line.image.attach(validImage);
+    line.image.attach(nullptr);
+    check(!backend.execute(line, {3, 1, 1}));
+}
 int main(int argc, char **argv) {
     try {
         auto device = createCpuDevice();
@@ -301,6 +428,8 @@ int main(int argc, char **argv) {
         (void)argv;
 #endif
         Backend backend{require(std::move(device))};
+        memberNames(backend);
+        residentBindings(backend);
         samplingAndCopy(backend);
         BufferResource<float> a{21}, b{21}, c{21};
         for (int i = 0; i < 21; ++i) {

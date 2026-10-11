@@ -6,10 +6,12 @@
 #include <cstring>
 #include <lutils/compute/AndroidHardwareBuffer.hpp>
 #include <lutils/compute/AndroidHardwareBufferImage.hpp>
+#include <lutils/compute/Compute.hpp>
 #include <lutils/image/AndroidImage.hpp>
 #include <media/NdkImageReader.h>
 #include <mutex>
 #ifdef LUTILS_TEST_REGION_DEVICE
+#include <nearest_sample.hpp>
 #include <lutils/compute/Vulkan.hpp>
 #include <lutils/image/DeviceRegion.hpp>
 #endif
@@ -212,6 +214,68 @@ struct Arrival {
         self.cv.notify_one();
     }
 };
+#ifdef LUTILS_TEST_REGION_DEVICE
+struct SampleResult {
+    co::MemoryHandle memory;
+    std::shared_ptr<co::Completion> completion;
+};
+SampleResult sampleNative(co::Backend &backend, std::shared_ptr<co::NativeImage> const &image) {
+    namespace k = co::kernel;
+    auto const desc = image->description();
+    auto positions = take(co::AndroidHardwareBufferMemory::allocate(4 * co::StorageCodec<k::vec2>::bytes));
+    auto output = take(co::AndroidHardwareBufferMemory::allocate(4 * co::StorageCodec<k::vec4>::bytes));
+    auto mapping = take(positions->map(co::Access::Write));
+    auto *data = take(mapping->writableData());
+    std::array<k::uvec2, 4> points{{{4, 6}, {5, 6}, {4, 7}, {desc.width - 1, desc.height - 1}}};
+    for (std::size_t i = 0; i < points.size(); ++i)
+        co::StorageCodec<k::vec2>::write(data + i * co::StorageCodec<k::vec2>::bytes,
+                                        {(float(points[i].x) + 0.5f) / float(desc.width),
+                                         (float(points[i].y) + 0.5f) / float(desc.height)});
+    ok(mapping->finish());
+    sampler_test::Nearest shader;
+    shader.image.attach(take(backend.device().importImage(image)));
+    shader.positions.attach(take(backend.device().importMemory(positions)));
+    shader.output.attach(take(backend.device().importMemory(output)));
+    auto completion = take(backend.execute(shader, {4, 1, 1}));
+    return {std::move(output), std::move(completion)};
+}
+void verifySamples(SampleResult const &result, co::NativeImageDesc const &desc) {
+    namespace k = co::kernel;
+    auto mapping = take(result.memory->map(co::Access::Read));
+    std::array<k::uvec2, 4> points{{{4, 6}, {5, 6}, {4, 7}, {desc.width - 1, desc.height - 1}}};
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        auto const x = points[i].x, y = points[i].y;
+        auto const sample = co::StorageCodec<k::vec4>::read(
+            mapping->data() + i * co::StorageCodec<k::vec4>::bytes);
+        std::array<unsigned char, 4> expected{};
+        if (desc.format == co::NativeImageFormat::Yuv420)
+            expected = {{value(2, x / 2, y / 2, 0), value(0, x, y, 0),
+                         value(1, x / 2, y / 2, 0), 255}};
+        else
+            for (unsigned b = 0; b < 4; ++b)
+                expected[b] = value(0, x, y, b);
+        for (std::size_t b = 0; b < 4; ++b)
+            check(std::abs(sample[b] * 255.0f - float(expected[b])) < 0.01f);
+    }
+    ok(mapping->finish());
+    ok(result.completion->wait());
+}
+void typedNative(co::Backend &backend) {
+    for (bool yuv : {false, true}) {
+        auto image = allocate(yuv, 32, 24);
+        fill(image);
+        auto const desc = image.resource.nativeStorage()->description();
+        std::weak_ptr<co::NativeImage> lifetime = image.resource.nativeStorage();
+        auto result = sampleNative(backend, image.resource.nativeStorage());
+        image = allocate(false, 8, 8);
+        check(!lifetime.expired());
+        verifySamples(result, desc);
+        result.completion.reset();
+        check(lifetime.expired());
+    }
+    std::cout << "typed native RGBA/YUV bindings and submission lifetime passed\n";
+}
+#endif
 void imageLease(co::Device *device) {
     Arrival arrival;
     AImageReader *raw = nullptr;
@@ -272,7 +336,7 @@ void imageLease(co::Device *device) {
     check(AImageReader_setImageListener(raw, nullptr) == AMEDIA_OK);
     std::cout << "AImage lease, producer fence and BufferQueue release passed\n";
 }
-void queuedYuvImage(co::Device *device) {
+void queuedYuvImage(co::Device *device, co::Backend *backend) {
     Arrival arrival;
     AImageReader *raw = nullptr;
     check(AImageReader_newWithUsage(128, 128, AIMAGE_FORMAT_YUV_420_888,
@@ -321,6 +385,8 @@ void queuedYuvImage(co::Device *device) {
         auto output = take(im::ImageResource::linear(plan.destination(), {memory}, layout.planes));
         auto executor = take(im::createDeviceRegionExecutor(*device));
         auto pending = take(executor->submit(plan, resource, output));
+        auto const desc = resource.nativeStorage()->description();
+        auto sampled = sampleNative(*backend, resource.nativeStorage());
         // The submission alone must keep the AImage lease and its reader alive.
         std::weak_ptr<AImageReader> lifetime = reader;
         resource = nativeOutput.resource;
@@ -337,10 +403,14 @@ void queuedYuvImage(co::Device *device) {
         ok(mapping->finish());
         ok(pending->wait());
         pending.reset();
+        check(!lifetime.expired());
+        verifySamples(sampled, desc);
+        sampled.completion.reset();
         check(lifetime.expired());
     } else
 #else
     (void)device;
+    (void)backend;
 #endif
     {
         auto mapping = take(resource.nativeStorage()->map(co::Access::Read));
@@ -358,28 +428,32 @@ void queuedYuvImage(co::Device *device) {
 }
 int main(int argc, char **) {
     try {
-        std::unique_ptr<co::Device> device;
+        std::unique_ptr<co::Backend> backend;
+        co::Device *device = nullptr;
 #ifdef LUTILS_TEST_REGION_DEVICE
         auto stats = std::make_shared<co::VulkanStatistics>();
         if (argc > 1) {
             co::VulkanOptions options;
             options.requireHardware = true;
             options.statistics = stats;
-            device = take(co::createVulkanDevice(options));
+            backend = std::make_unique<co::Backend>(take(co::createVulkanDevice(options)));
+            device = &backend->device();
         }
 #else
         (void)argc;
 #endif
-        regions(false, device.get());
+        regions(false, device);
         if (!device)
             regions(true, nullptr);
         if (device) {
             sampledRegions(*device, false);
             sampledRegions(*device, true);
         }
-        imageLease(device.get());
-        queuedYuvImage(device.get());
+        imageLease(device);
+        queuedYuvImage(device, backend.get());
 #ifdef LUTILS_TEST_REGION_DEVICE
+        if (backend)
+            typedNative(*backend);
         check(stats->stagingBuffersCreated.load() == 0 &&
               stats->readbackVectorsCreated.load() == 0);
 #endif

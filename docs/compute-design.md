@@ -21,7 +21,8 @@ Release 的 NDEBUG）及常规 -D/-U 按编译顺序同步。语言条件表达�
 | tools/kernelc | AST 校验、std430 布局、GLSL 与 CPU 包装生成 | Clang/LLVM，仅构建期 |
 | compute/runtime | 类型化 Backend、主机资源、codec、命令与设备接口 | core、kernel、Threads |
 | compute/backends | CPU 线程池/工作组执行和 Vulkan 单计算队列 | runtime，Vulkan 后端私有依赖 loader |
-| image/ops | 转换计划、设备帧、打包传输和图像内核 | image、runtime、生成内核 |
+| image/memory | 线性与原生图像资源、CPU 映射、dma-buf/AHB/AImage 接入 | image、runtime |
+| image/ops | 转换计划、设备帧、打包传输和图像内核 | image/memory、runtime、生成内核 |
 
 core 仅提供各模块共用的结果头文件。原 erasure 模块独立，不把动态分发放进像素循环。
 
@@ -48,6 +49,7 @@ HostFrame 拥有内存，view() 即时生成借用关系；视图不可超出所
 主入口是带 `LUTILS_KERNEL` 标记的聚合结构体，直接在 `main()` 中通过成员 binding 读写资源。
 类型、资源、格式、数组、Uniform、支持语法与构建方式见 [PDF 功能对齐](pdf-parity.md)。
 类内核使用 ABI v2：资源描述包含逻辑 slot、元素 stride 或图像格式/维度；工作组支持三维。
+Uniform 通过生成的 `KernelTraits::pack` 打包，区域算子同样按 C++ 参数字段赋值，不手工维护 word 顺序。
 前 16 字节参数保存实际执行范围，普通内核入口自动跳过补齐的工作项；共享内存/屏障内核要求完整工作组。
 类型化 stride 按字节描述，支持 half 的 2 字节元素；传输仍使用补齐的 word 容器。Vulkan 校验 SPIR-V LocalSize
 和主机元数据一致，并检查设备能力。原有图像转换已迁移到这个入口。
@@ -65,6 +67,10 @@ CPU bounds 检查帮助诊断，GPU 正确性依赖内核范围契约与差分�
 ## 执行与所有权
 
 Device 工厂返回隐藏实现的接口；Buffer/Kernel 通过共享句柄支持跨提交复用。
+类型化 binding 同时接受借用的主机 `BufferResource` 和持有的设备 `BufferHandle`。
+上传资源与 `Device::importMemory/importImage` 的导入资源均可通过 `Backend::record/execute` 录制，
+统一使用 CommandList 的布局/访问验证和 Device 的归属/能力验证。kernel 层只前置声明不透明 Buffer，
+不依赖运行时实现。原生图像的采样通过 `SamplerBinding` 表达，保持实际外部格式与帧租约。
 CommandList 按顺序保存 Upload、Dispatch、Readback。dispatch 复制参数并保留资源；
 upload 的左值输入复制，右值输入转移所有权，转移后不能通过旧指针或引用修改该存储。
 提交复制命令描述并共享已拥有的上传数据，之后可以销毁或重新录制原列表。
