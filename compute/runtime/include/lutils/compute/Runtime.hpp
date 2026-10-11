@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <lutils/Result.hpp>
@@ -33,6 +34,7 @@ struct BindingInfo {
     std::optional<ImageDesc> image;
     // Zero retains the ABI v1/v2 word stride; generated typed shaders set byte stride.
     std::size_t elementBytes = 0;
+    bool sampled = false;
 };
 Result<std::size_t> imageWordCount(ImageDesc const &desc);
 struct CpuBuffer {
@@ -96,6 +98,7 @@ struct Kernel {
 };
 using BufferHandle = std::shared_ptr<Buffer>;
 struct Memory;
+struct NativeImage;
 using MemoryHandle = std::shared_ptr<Memory>;
 using KernelHandle = std::shared_ptr<Kernel>;
 struct Dispatch {
@@ -124,12 +127,20 @@ struct Readback {
     BufferHandle buffer;
     ReadbackToken token;
 };
-using Command = std::variant<Upload, Dispatch, Readback>;
+struct CopyImageRegion {
+    BufferHandle source, destination;
+    Word sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0;
+    Word width = 0, height = 0;
+    // Normalized RGBA in [0,1]. Clears the complete destination before copying.
+    std::optional<std::array<float, 4>> background;
+};
+using Command = std::variant<Upload, Dispatch, Readback, CopyImageRegion>;
 struct CommandList {
     // Copies lvalues; takes ownership of rvalues. After moving, callers must not
     // modify the transferred storage through previously obtained pointers/references.
     Result<void> upload(BufferHandle buffer, std::vector<Word> words);
     Result<void> dispatch(Dispatch dispatch);
+    Result<void> copyImage(CopyImageRegion copy);
     Result<ReadbackToken> readback(BufferHandle buffer);
     std::vector<Command> const &commands() const noexcept { return commands_; }
 
@@ -155,6 +166,9 @@ struct Device {
     virtual Result<BufferHandle> createBuffer(std::size_t words) = 0;
     // Direct binding only. Unsupported memory is never uploaded or staged.
     virtual Result<BufferHandle> importMemory(MemoryHandle const &memory);
+    virtual Result<BufferHandle> importImage(std::shared_ptr<NativeImage> const &) {
+        return Error{ErrorCode::Unsupported, "device does not import native images"};
+    }
     virtual Result<BufferHandle> createBufferBytes(std::size_t bytes) {
         if (bytes % sizeof(Word))
             return Error{ErrorCode::Unsupported, "device requires whole-word buffer storage"};

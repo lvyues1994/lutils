@@ -104,7 +104,7 @@ C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考�
 | 目标 | 内容 |
 | --- | --- |
 | `lutils::image` | 通用固定块格式描述、颜色信息、正负 stride 视图、主机帧、CPU 裁剪与填充 |
-| `lutils::image_memory` | 统一图像资源、CPU 映射、Linux dma-buf 和 Android AHB BLOB 接入 |
+| `lutils::image_memory` | 统一图像资源、CPU 映射、Linux dma-buf、Android AHB BLOB/原生 RGBA/YUV 与 AImage 接入 |
 | `lutils::compute_kernel` | C++17 内核资源访问类型 |
 | `lutils::compute`、`lutils::compute_cpu` | 任务、资源、CPU 参考执行 |
 | `lutils::compute_vulkan` | 可选 Vulkan 1.1 计算后端 |

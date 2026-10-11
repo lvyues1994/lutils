@@ -157,5 +157,33 @@ template <ImageFormat G, Dim D, class P, uint S>
 auto imageSize(ImageBinding<G, D, P, S> const &image) {
     return image.extent();
 }
+// Normalized coordinates, nearest filtering and clamp-to-edge. Native YUV
+// imports expose raw normalized (Cr,Y,Cb,1), without a color matrix or range
+// expansion.
+template <uint Slot> struct SamplerBinding {
+    static constexpr uint slot = Slot;
+    void attach(BufferResource<cpu::RGBA8, Dim::D2> *resource) { image_.attach(resource); }
+    BufferResource<cpu::RGBA8, Dim::D2> *resource() const { return image_.resource(); }
+    void cpuView(void *data, ivec2 extent) { image_.cpuView(data, extent); }
+    vec4 sample(vec2 uv) const {
+        auto n = image_.extent();
+        if (!std::isfinite(uv.x) || !std::isfinite(uv.y))
+            throw std::invalid_argument("nonfinite sample coordinate");
+        auto coordinate = [](float u, std::int32_t size) {
+            if (u <= 0)
+                return 0;
+            if (u >= 1)
+                return size - 1;
+            return std::min(size - 1, static_cast<std::int32_t>(u * static_cast<float>(size)));
+        };
+        return image_.load({coordinate(uv.x, n.x), coordinate(uv.y, n.y)});
+    }
+
+  private:
+    ImageBinding<ImageFormat::RGBA8, Dim::D2, cpu::RGBA8, Slot> image_;
+};
+template <uint S> vec4 sampleNearest(SamplerBinding<S> const &image, vec2 coordinate) {
+    return image.sample(coordinate);
+}
 } // namespace kernel
 } // namespace lutils::compute

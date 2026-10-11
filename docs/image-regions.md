@@ -92,8 +92,9 @@ Completion 保活命令与导入对象；引用保活不能替代摄像头/解�
 协议等待或交还 release fence。GPU 已提交后若 fence 发布失败，库等待该任务结束后返回错误，输出可能
 已改变；不会假装操作没有执行。CPU 同步或设备执行失败也不提供输出回滚。
 
-Android 通过独立 `Memory` 适配器接入 AHardwareBuffer BLOB，详见 [Android 支持](android.md)。
-原生 AHB RGBA/YUV 图像尚未接入；这类资源需要单独的图像布局与执行路径。
+Android 的线性 AHardwareBuffer BLOB 使用 `Memory`，原生 RGBA/YUV AHB 和 AImage 使用
+`NativeImage`。CPU 处理实际 plane/pixel stride；GPU 支持 RGBA image copy 和原生图像采样到
+线性输出。接口、同步及支持组合见 [Android 支持](android.md#原生-rgbayuv-图像)。
 
 ## 验证
 

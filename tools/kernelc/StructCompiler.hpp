@@ -13,6 +13,7 @@ struct StructCompiler {
         unsigned slot, dimensions = 0, format = 0;
         std::string qualifier, prefix;
         bool read = false, write = false;
+        bool sampled = false;
     };
     struct UniformInfo {
         FieldDecl const *field;
@@ -265,6 +266,16 @@ struct StructCompiler {
                 Type imageType;
                 imageType.cpp = formatName;
                 resources.push_back({f, imageType, slot, dim, format, qualifier, prefix});
+                names[f] = "b" + std::to_string(resources.size() - 1);
+            } else if (tn == "lutils::compute::kernel::SamplerBinding") {
+                auto slot = static_cast<unsigned>(args[0].getAsIntegral().getZExtValue());
+                if (!imageSlots.insert(slot).second)
+                    fail(f, "duplicate image binding slot");
+                Type imageType;
+                imageType.cpp = "RGBA8";
+                Resource resource{f, imageType, slot, 2};
+                resource.sampled = true;
+                resources.push_back(resource);
                 names[f] = "b" + std::to_string(resources.size() - 1);
             } else if (tn == "lutils::compute::kernel::Uniform") {
                 auto slot = static_cast<unsigned>(args[1].getAsIntegral().getZExtValue());
@@ -624,9 +635,10 @@ struct StructCompiler {
             auto q = f->getQualifiedNameAsString(), n = f->getNameAsString();
             if (q.rfind("lutils::compute::kernel::", 0) == 0) {
                 static std::set<std::string> intrinsic{
-                    "dot",   "cross",     "length",     "normalize", "reflect", "min",  "max",
-                    "clamp", "sqrt",      "abs",        "pow",       "floor",   "ceil", "sin",
-                    "cos",   "imageLoad", "imageStore", "imageSize", "barrier"};
+                    "dot",       "cross",      "length",    "normalize", "reflect",
+                    "min",       "max",        "clamp",     "sqrt",      "abs",
+                    "pow",       "floor",      "ceil",      "sin",       "cos",
+                    "imageLoad", "imageStore", "imageSize", "barrier",   "sampleNearest"};
                 if (atomicCall(c)) {
                     for (auto *argument : c->arguments())
                         if (mutates(argument))
@@ -653,6 +665,8 @@ struct StructCompiler {
                     auto image = expr(c->getArg(0), true);
                     return n + "(" + image + "," + args(c, 1) + ")";
                 }
+                if (n == "sampleNearest")
+                    return "textureLod(" + args(c) + ",0.0)";
                 return n + "(" + args(c) + ")";
             }
             // libc++ can expose scalar <cmath> overloads through std::__math.
@@ -808,7 +822,9 @@ struct StructCompiler {
             auto const &r = resources[i];
             out << "layout(set=0,binding=" << i;
             auto access = r.write ? (r.read ? "" : "writeonly ") : "readonly ";
-            if (r.dimensions)
+            if (r.sampled)
+                out << ") uniform sampler2D b" << i << ";\n";
+            else if (r.dimensions)
                 out << "," << r.qualifier << ") uniform " << access << r.prefix << "image"
                     << r.dimensions << "D b" << i << ";\n";
             else
@@ -911,6 +927,8 @@ struct StructCompiler {
             else
                 o << (alignTo(r.type.bytes, r.type.align) + 3) / 4 << ",{},"
                   << alignTo(r.type.bytes, r.type.align);
+            if (r.sampled)
+                o << ",0,true";
             o << "});\n";
         }
         o << "s.sharedMemoryBytes=" << alignTo(sharedBytes, sharedAlignment)

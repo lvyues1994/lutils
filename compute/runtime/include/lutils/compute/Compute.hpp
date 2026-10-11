@@ -361,6 +361,12 @@ struct Backend {
         auto r = resolve(binding);
         return r ? Result<void>{} : Result<void>{r.error()};
     }
+    template <Word S> Result<BufferHandle> resolve(kernel::SamplerBinding<S> const &binding) {
+        kernel::ImageBinding<kernel::ImageFormat::RGBA8, kernel::Dim::D2, kernel::cpu::RGBA8, S>
+            image;
+        image.attach(binding.resource());
+        return resolve(image);
+    }
     template <class B> Result<void> bindImage(B const &binding) { return bindBuffer(binding); }
     template <class T, Word S> Result<void> bindUniform(kernel::Uniform<T, S> const &) {
         return {};

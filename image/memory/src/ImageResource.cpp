@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <lutils/image/ImageResource.hpp>
 
@@ -12,8 +13,16 @@ struct MappedImage {
     ConstFrameView read;
     FrameView view;
     std::vector<std::unique_ptr<compute::MemoryMapping>> mappings;
+    std::unique_ptr<compute::NativeImageMapping> native;
+    std::vector<compute::NativePlane> samples;
+    std::vector<std::byte *> writes;
     Result<void> finish() {
         std::optional<Error> failure;
+        if (native) {
+            auto done = native->finish();
+            if (!done)
+                failure = done.error();
+        }
         for (auto &m : mappings) {
             auto done = m->finish();
             if (!done && !failure)
@@ -26,6 +35,44 @@ Result<MappedImage> mapImage(ImageResource const &image, Access access) {
     MappedImage result;
     result.view.desc = image.description();
     result.read.desc = image.description();
+    if (image.nativeStorage()) {
+        auto mapped = image.nativeStorage()->map(access);
+        if (!mapped)
+            return mapped.error();
+        result.native = std::move(mapped).value();
+        auto const crop = image.visibleRectangle();
+        if (!result.native ||
+            result.native->planes().size() != image.description().format.planes.size())
+            return Error{ErrorCode::InvalidArgument, "native mapping plane count mismatch"};
+        auto const allocation = image.nativeStorage()->description();
+        for (std::size_t p = 0; p < result.native->planes().size(); ++p) {
+            auto v = result.native->planes()[p];
+            auto const &f = image.description().format.planes[p];
+            auto const columns = allocation.width / f.blockWidth;
+            auto const rows = allocation.height / f.blockHeight;
+            if (!v.data || v.capacity > std::size_t{PTRDIFF_MAX} || v.capacity < f.blockBytes ||
+                v.pixelStride < f.blockBytes || !v.rowStride ||
+                columns - 1 > (v.capacity - f.blockBytes) / v.pixelStride)
+                return Error{ErrorCode::Bounds, "invalid native mapping pixel span"};
+            auto rowBytes = (columns - 1) * v.pixelStride + f.blockBytes;
+            if (rowBytes > v.rowStride || rows - 1 > (v.capacity - rowBytes) / v.rowStride)
+                return Error{ErrorCode::Bounds, "native mapping exceeds plane capacity"};
+            auto const offset =
+                (crop.y / f.blockHeight) * v.rowStride + (crop.x / f.blockWidth) * v.pixelStride;
+            v.data += offset;
+            v.capacity -= offset;
+            result.samples.push_back(v);
+            if (access != Access::Read) {
+                auto writable = result.native->writablePlane(p);
+                if (!writable)
+                    return writable.error();
+                if (!writable.value())
+                    return Error{ErrorCode::InvalidArgument, "null native writable plane"};
+                result.writes.push_back(writable.value() + offset);
+            }
+        }
+        return result;
+    }
     for (auto const &object : image.objects()) {
         auto mapping = object->map(access);
         if (!mapping)
@@ -45,6 +92,40 @@ Result<MappedImage> mapImage(ImageResource const &image, Access access) {
     }
     return result;
 }
+Result<void> runMapped(RegionPlan const &plan, MappedImage const &input,
+                       MappedImage const &output) {
+    if (!input.native && !output.native)
+        return plan.run(input.read, output.view);
+    // Native planes can be interleaved. Copy logical blocks only, never row
+    // padding.
+    for (std::size_t p = 0; p < plan.planes().size(); ++p) {
+        auto const &region = plan.planes()[p];
+        auto const bytes = plan.source().format.planes[p].blockBytes;
+        auto const src = [&](std::size_t const x, std::size_t const y) {
+            return input.native ? input.samples[p].data + y * input.samples[p].rowStride +
+                                      x * input.samples[p].pixelStride
+                                : row(input.read.planes[p], y) + x * bytes;
+        };
+        auto const dst = [&](std::size_t const x, std::size_t const y) {
+            return output.native ? output.writes[p] + y * output.samples[p].rowStride +
+                                       x * output.samples[p].pixelStride
+                                 : row(output.view.planes[p], y) + x * bytes;
+        };
+        for (std::size_t y = 0; y < region.rows; ++y)
+            for (std::size_t x = 0; x < region.rowBytes / bytes; ++x) {
+                auto const left = region.destinationX / bytes;
+                if (x >= left && x - left < region.copyBytes / bytes && y >= region.destinationY &&
+                    y - region.destinationY < region.copyRows)
+                    std::memcpy(dst(x, y),
+                                src(region.sourceX / bytes + x - left,
+                                    region.sourceY + y - region.destinationY),
+                                bytes);
+                else if (!region.background.empty())
+                    std::memcpy(dst(x, y), region.background.data(), bytes);
+            }
+    }
+    return {};
+}
 struct Completed final : compute::Completion {
     Result<void> wait() override { return {}; }
     Result<bool> ready() override { return true; }
@@ -59,10 +140,10 @@ struct CpuRegions final : RegionExecutor {
         auto input = mapImage(source, Access::Read);
         if (!input)
             return input.error();
-        auto output = mapImage(destination, Access::ReadWrite);
+        auto output = mapImage(destination, Access::Write);
         if (!output)
             return output.error();
-        auto result = plan.run(input.value().read, output.value().view);
+        auto result = runMapped(plan, input.value(), output.value());
         auto out = output.value().finish();
         auto in = input.value().finish();
         if (!result)
@@ -156,7 +237,36 @@ Result<ImageResource> ImageResource::linear(FrameDesc description,
 }
 Result<ImageResource> ImageResource::borrow(ConstFrameView const &view) { return borrowView(view); }
 Result<ImageResource> ImageResource::borrow(FrameView const &view) { return borrowView(view); }
+Result<ImageResource> ImageResource::native(std::shared_ptr<compute::NativeImage> image,
+                                            ColorSpec color, Rectangle visible) {
+    if (!image)
+        return Error{ErrorCode::InvalidArgument, "null native image"};
+    auto const d = image->description();
+    if ((d.format != compute::NativeImageFormat::Rgba8 &&
+         d.format != compute::NativeImageFormat::Yuv420) ||
+        !d.width || !d.height ||
+        (d.format == compute::NativeImageFormat::Yuv420 && (d.width % 2 || d.height % 2)))
+        return Error{ErrorCode::InvalidArgument, "invalid native image description"};
+    if (!visible.x && !visible.y && !visible.width && !visible.height)
+        visible = {0, 0, d.width, d.height};
+    if (!visible.width || !visible.height || visible.x > d.width || visible.y > d.height ||
+        visible.width > d.width - visible.x || visible.height > d.height - visible.y)
+        return Error{ErrorCode::Bounds, "native image crop exceeds allocation"};
+    auto format = d.format == compute::NativeImageFormat::Rgba8 ? rgba8() : i420();
+    for (auto const &p : format.planes)
+        if (visible.x % p.blockWidth || visible.width % p.blockWidth || visible.y % p.blockHeight ||
+            visible.height % p.blockHeight)
+            return Error{ErrorCode::InvalidArgument, "native crop is not sample aligned"};
+    ImageResource result;
+    result.description_ = {visible.width, visible.height, std::move(format), color};
+    result.native_ = std::move(image);
+    result.visible_ = visible;
+    return result;
+}
 bool ImageResource::aliases(ImageResource const &other) const noexcept {
+    if (native_ && other.native_)
+        return native_ == other.native_ || native_->aliases(*other.native_) ||
+               other.native_->aliases(*native_);
     for (auto const &a : objects_)
         for (auto const &b : other.objects_)
             if (::lutils::image::aliases(*a, *b))
@@ -170,6 +280,16 @@ Result<void> RegionExecutor::run(RegionPlan const &plan, ImageResource const &so
 }
 std::unique_ptr<RegionExecutor> createCpuRegionExecutor() { return std::make_unique<CpuRegions>(); }
 Result<ImageResource> bindImage(compute::Device &device, ImageResource const &image) {
+    if (image.native_) {
+        if (image.nativeBinding_)
+            return image;
+        auto binding = device.importImage(image.native_);
+        if (!binding)
+            return binding.error();
+        auto result = image;
+        result.nativeBinding_ = std::move(binding).value();
+        return result;
+    }
     std::vector<compute::MemoryHandle> objects;
     for (auto const &m : image.objects()) {
         auto buffer = device.importMemory(m);

@@ -4,6 +4,9 @@
 #include <lutils/image/Frame.hpp>
 #include <lutils/image/ImageResource.hpp>
 #include <stdexcept>
+#ifdef __ANDROID__
+#include <lutils/image/AndroidImage.hpp>
+#endif
 #ifdef WITH_SHADER
 #include <consumer_shader.hpp>
 #endif
@@ -34,6 +37,10 @@ void check(bool value) {
         throw std::runtime_error("consumer result mismatch");
 }
 int main() {
+#ifdef __ANDROID__
+    check(!im::importAndroidImage(nullptr));
+    check(!im::adoptAndroidImage(im::AImageOwner{}, {}));
+#endif
     auto expectedValue =
         lutils::expected<int, std::string>{21}.transform([](int x) { return x * 2; });
     check(expectedValue.has_value() and expectedValue.value() == 42);

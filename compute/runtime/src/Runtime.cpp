@@ -39,6 +39,30 @@ Result<ReadbackToken> CommandList::readback(BufferHandle buffer) {
     commands_.push_back(Readback{std::move(buffer), token});
     return token;
 }
+Result<void> CommandList::copyImage(CopyImageRegion copy) {
+    if (copy.background)
+        for (float channel : *copy.background)
+            if (!(channel >= 0 && channel <= 1))
+                return Error{ErrorCode::InvalidArgument, "background must be normalized RGBA"};
+    if (!copy.source || !copy.destination || !copy.destination->writable() ||
+        copy.source->aliases(*copy.destination) || copy.destination->aliases(*copy.source))
+        return Error{ErrorCode::InvalidArgument,
+                     "image copy resources are null, read-only or aliased"};
+    auto const source = copy.source->imageDescription();
+    auto const destination = copy.destination->imageDescription();
+    if (!source || !destination || source->dimensions != 2 || destination->dimensions != 2 ||
+        source->format != kernel::ImageFormat::RGBA8 || destination->format != source->format)
+        return Error{ErrorCode::Unsupported, "image copy requires two RGBA8 2D images"};
+    auto fits = [&](ImageDesc const &d, Word x, Word y) {
+        return copy.width && copy.height && x <= d.extent.x && y <= d.extent.y &&
+               copy.width <= d.extent.x - x && copy.height <= d.extent.y - y;
+    };
+    if (!fits(*source, copy.sourceX, copy.sourceY) ||
+        !fits(*destination, copy.destinationX, copy.destinationY))
+        return Error{ErrorCode::Bounds, "image copy rectangle exceeds image"};
+    commands_.push_back(std::move(copy));
+    return {};
+}
 Result<void> validate(KernelSource const &source) {
     if (source.abiVersion != 1 && source.abiVersion != 2)
         return Error{ErrorCode::Unsupported, "unsupported kernel ABI"};
@@ -56,6 +80,9 @@ Result<void> validate(KernelSource const &source) {
     if (!source.resources.empty() && source.resources.size() != source.bindings.size())
         return Error{ErrorCode::InvalidArgument, "resource metadata count mismatch"};
     for (auto const &resource : source.resources) {
+        if (resource.sampled && (!resource.image || resource.image->dimensions != 2 ||
+                                 resource.image->format != kernel::ImageFormat::RGBA8))
+            return Error{ErrorCode::InvalidArgument, "sampler requires a normalized RGBA 2D view"};
         if (!resource.elementWords)
             return Error{ErrorCode::InvalidArgument, "resource element stride must be positive"};
         if (resource.image) {
@@ -64,6 +91,9 @@ Result<void> validate(KernelSource const &source) {
                 return valid.error();
         }
     }
+    for (std::size_t i = 0; i < source.resources.size(); ++i)
+        if (source.resources[i].sampled && source.bindings[i] != Access::Read)
+            return Error{ErrorCode::InvalidArgument, "sampled images are read-only"};
     return {};
 }
 Result<void> CommandList::dispatch(Dispatch command) {

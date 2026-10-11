@@ -8,3 +8,7 @@ target_link_libraries(lutils_image_memory PUBLIC lutils::image lutils::compute
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(lutils_image_memory PRIVATE src/LinuxImage.cpp)
 endif()
+if(ANDROID)
+    target_sources(lutils_image_memory PRIVATE src/AndroidImage.cpp)
+    target_link_libraries(lutils_image_memory PRIVATE mediandk)
+endif()

@@ -124,6 +124,28 @@ struct CpuDeviceImpl final : Device {
             }
         }
     }
+    bool belongs(CopyImageRegion const &copy) const {
+        return get(copy.source) && get(copy.destination);
+    }
+    void execute(CopyImageRegion const &copy, CpuCompletion &) {
+        auto const &input = get(copy.source)->words;
+        auto &output = get(copy.destination)->words;
+        auto const source = copy.source->imageDescription().value();
+        auto const destination = copy.destination->imageDescription().value();
+        if (copy.background) {
+            Word background = 0;
+            for (unsigned i = 0; i < 4; ++i)
+                background |=
+                    Word{kernel::ChannelEncoding<std::uint8_t, kernel::NumberKind::UNorm>::encode(
+                        (*copy.background)[i])}
+                    << (8 * i);
+            std::fill(output.begin(), output.end(), background);
+        }
+        for (Word y = 0; y < copy.height; ++y)
+            std::copy_n(
+                input.data() + (copy.sourceY + y) * source.extent.x + copy.sourceX, copy.width,
+                output.data() + (copy.destinationY + y) * destination.extent.x + copy.destinationX);
+    }
     void execute(Readback const &command, CpuCompletion &result) {
         result.results.emplace_back(
             command.token, std::make_shared<std::vector<Word> const>(get(command.buffer)->words));

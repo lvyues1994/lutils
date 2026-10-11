@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <lutils/compute/NativeImage.hpp>
 #include <lutils/compute/Vulkan.hpp>
 #include <optional>
 #include <stdexcept>
@@ -9,6 +10,7 @@
 #define VK_USE_PLATFORM_ANDROID_KHR 1
 #include <android/hardware_buffer.h>
 #include <lutils/compute/AndroidHardwareBuffer.hpp>
+#include <lutils/compute/AndroidHardwareBufferImage.hpp>
 #endif
 #include <vulkan/vulkan.h>
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -85,6 +87,7 @@ validationMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsM
     return VK_FALSE;
 }
 
+struct VulkanSampler;
 struct DeviceState {
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -97,6 +100,8 @@ struct DeviceState {
     std::uint32_t timestampBits = 0;
     ComputeCapabilities capabilities;
     bool uniformBuffer16 = false;
+    bool samplerYcbcr = false;
+    std::vector<std::weak_ptr<VulkanSampler>> samplers;
 #ifdef LUTILS_EXTERNAL_MEMORY
 #ifdef LUTILS_LINUX_DMA_BUF
     PFN_vkGetMemoryFdPropertiesKHR getMemoryFdProperties = nullptr;
@@ -235,11 +240,14 @@ struct DeviceState {
         });
         auto storage16 = structure<VkPhysicalDevice16BitStorageFeatures>(
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES);
+        auto ycbcr = structure<VkPhysicalDeviceSamplerYcbcrConversionFeatures>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES);
         auto arithmetic16 = structure<VkPhysicalDeviceShaderFloat16Int8Features>(
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES);
         auto queried =
             structure<VkPhysicalDeviceFeatures2>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
-        queried.pNext = &storage16;
+        queried.pNext = &ycbcr;
+        ycbcr.pNext = &storage16;
         if (hasHalf)
             storage16.pNext = &arithmetic16;
         vkGetPhysicalDeviceFeatures2(physical, &queried);
@@ -251,7 +259,8 @@ struct DeviceState {
         }
         storage16.storageInputOutput16 = VK_FALSE;
         arithmetic16.shaderInt8 = VK_FALSE;
-        d.pNext = &storage16;
+        samplerYcbcr = ycbcr.samplerYcbcrConversion != VK_FALSE;
+        d.pNext = &ycbcr;
         std::vector<char const *> enabledExtensions;
         if (hasHalf && options.enableFloat16) {
             enabledExtensions.push_back(halfExtension);
@@ -610,6 +619,80 @@ VkFormat imageFormat(kernel::ImageFormat format) {
     }
     throw Failure{"unknown image format"};
 }
+struct SamplerDescription {
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint64_t externalFormat = 0;
+    bool yuv = false;
+    VkChromaLocation x = VK_CHROMA_LOCATION_COSITED_EVEN;
+    VkChromaLocation y = VK_CHROMA_LOCATION_COSITED_EVEN;
+};
+bool operator==(SamplerDescription const &a, SamplerDescription const &b) {
+    return a.format == b.format && a.externalFormat == b.externalFormat && a.yuv == b.yuv &&
+           a.x == b.x && a.y == b.y;
+}
+struct VulkanSampler {
+    std::shared_ptr<DeviceState> state;
+    SamplerDescription description;
+    VkSamplerYcbcrConversion conversion = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VulkanSampler(std::shared_ptr<DeviceState> s, SamplerDescription d)
+        : state(std::move(s)), description(d) {}
+    VulkanSampler(VulkanSampler const &) = delete;
+    VulkanSampler &operator=(VulkanSampler const &) = delete;
+    ~VulkanSampler() {
+        if (sampler)
+            vkDestroySampler(state->device, sampler, nullptr);
+        if (conversion)
+            vkDestroySamplerYcbcrConversion(state->device, conversion, nullptr);
+    }
+    void initialize() {
+        if (description.yuv) {
+            auto create = structure<VkSamplerYcbcrConversionCreateInfo>(
+                VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO);
+            create.format = description.format;
+            create.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_RGB_IDENTITY;
+            create.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_FULL;
+            create.xChromaOffset = description.x;
+            create.yChromaOffset = description.y;
+            create.chromaFilter = VK_FILTER_NEAREST;
+#if defined(__ANDROID__)
+            auto ext =
+                structure<VkExternalFormatANDROID>(VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID);
+            ext.externalFormat = description.externalFormat;
+            if (ext.externalFormat)
+                create.pNext = &ext;
+#endif
+            check(vkCreateSamplerYcbcrConversion(state->device, &create, nullptr, &conversion),
+                  "create raw YUV conversion");
+        }
+        auto info = structure<VkSamplerYcbcrConversionInfo>(
+            VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO);
+        info.conversion = conversion;
+        auto create = structure<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+        if (conversion)
+            create.pNext = &info;
+        create.magFilter = create.minFilter = VK_FILTER_NEAREST;
+        create.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        create.addressModeU = create.addressModeV = create.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        check(vkCreateSampler(state->device, &create, nullptr, &sampler), "create nearest sampler");
+    }
+};
+std::shared_ptr<VulkanSampler> nearestSampler(std::shared_ptr<DeviceState> const &state,
+                                              SamplerDescription description) {
+    for (auto it = state->samplers.begin(); it != state->samplers.end();) {
+        if (auto sampler = it->lock()) {
+            if (sampler->description == description)
+                return sampler;
+            ++it;
+        } else
+            it = state->samplers.erase(it);
+    }
+    auto sampler = std::make_shared<VulkanSampler>(state, description);
+    sampler->initialize();
+    state->samplers.push_back(sampler);
+    return sampler;
+}
 struct VulkanImage final : Buffer {
     std::shared_ptr<DeviceState> state;
     ImageDesc desc;
@@ -618,6 +701,150 @@ struct VulkanImage final : Buffer {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     std::size_t words;
     bool initialized = false;
+    std::shared_ptr<NativeImage> external;
+    std::shared_ptr<VulkanSampler> sampler;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    bool writable() const noexcept override { return !external || external->writable(); }
+    bool aliases(Buffer const &other) const noexcept override {
+        auto const *b = dynamic_cast<VulkanImage const *>(&other);
+        return this == &other || (external && b && b->external && external->aliases(*b->external));
+    }
+#if defined(__ANDROID__)
+    Result<void> importHardwareBuffer(std::shared_ptr<AndroidHardwareBufferImage> source) {
+        if (!state->capabilities.externalAndroidHardwareBuffer)
+            return Error{ErrorCode::Unsupported, "native AHB image interop unavailable"};
+        bool const yuv = source->description().format == NativeImageFormat::Yuv420;
+        if (yuv && !state->samplerYcbcr)
+            return Error{ErrorCode::Unsupported, "device does not support YUV sampling"};
+        AHardwareBuffer_Desc hardwareDesc{};
+        AHardwareBuffer_describe(source->nativeBuffer(), &hardwareDesc);
+        if (!(hardwareDesc.usage &
+              (AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER)))
+            return Error{ErrorCode::Unsupported, "AHB image lacks GPU usage"};
+        auto format = structure<VkAndroidHardwareBufferFormatPropertiesANDROID>(
+            VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID);
+        auto hardware = structure<VkAndroidHardwareBufferPropertiesANDROID>(
+            VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID);
+        hardware.pNext = &format;
+        check(state->getHardwareBufferProperties(state->device, source->nativeBuffer(), &hardware),
+              "query native AHB image");
+        // Use the Android external format for all flexible YUV layouts. Its
+        // queried features describe this external format, not a concrete VkFormat.
+        if (yuv) {
+            if (!format.externalFormat)
+                return Error{ErrorCode::Unsupported, "AHB YUV image exposes no external format"};
+            format.format = VK_FORMAT_UNDEFINED;
+        }
+        if (!yuv && format.format != VK_FORMAT_R8G8B8A8_UNORM)
+            return Error{ErrorCode::Unsupported,
+                         "AHB RGBA format is not a transferable Vulkan format"};
+        bool const sampled = (hardwareDesc.usage & AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE) != 0;
+        if (yuv && (!sampled || !(format.formatFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)))
+            return Error{ErrorCode::Unsupported, "AHB YUV image lacks sampled-image support"};
+        usage = yuv ? 0u : VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (sampled)
+            usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        auto queryExternal = structure<VkPhysicalDeviceExternalImageFormatInfo>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+        queryExternal.handleType =
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+        auto query = structure<VkPhysicalDeviceImageFormatInfo2>(
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2);
+        query.pNext = &queryExternal;
+        query.format = format.format;
+        query.type = VK_IMAGE_TYPE_2D;
+        query.tiling = VK_IMAGE_TILING_OPTIMAL;
+        query.usage = usage;
+        auto externalProperties = structure<VkExternalImageFormatProperties>(
+            VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+        auto properties =
+            structure<VkImageFormatProperties2>(VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2);
+        properties.pNext = &externalProperties;
+        if (format.format != VK_FORMAT_UNDEFINED) {
+            auto const supported =
+                vkGetPhysicalDeviceImageFormatProperties2(state->physical, &query, &properties);
+            if (supported == VK_ERROR_FORMAT_NOT_SUPPORTED ||
+                !(externalProperties.externalMemoryProperties.externalMemoryFeatures &
+                  VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
+                return Error{ErrorCode::Unsupported,
+                             "native AHB image is not importable with requested usage"};
+            check(supported, "query AHB image support");
+            if (hardwareDesc.width > properties.imageFormatProperties.maxExtent.width ||
+                hardwareDesc.height > properties.imageFormatProperties.maxExtent.height)
+                return Error{ErrorCode::Unsupported, "native image exceeds device dimensions"};
+        }
+        auto externalFormat =
+            structure<VkExternalFormatANDROID>(VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID);
+        externalFormat.externalFormat =
+            format.format == VK_FORMAT_UNDEFINED ? format.externalFormat : 0;
+        auto ext = structure<VkExternalMemoryImageCreateInfo>(
+            VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+        ext.handleTypes = queryExternal.handleType;
+        if (externalFormat.externalFormat)
+            ext.pNext = &externalFormat;
+        auto create = structure<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+        create.pNext = &ext;
+        create.imageType = query.type;
+        create.format = query.format;
+        create.extent = {hardwareDesc.width, hardwareDesc.height, 1};
+        create.mipLevels = 1;
+        create.arrayLayers = 1;
+        create.samples = VK_SAMPLE_COUNT_1_BIT;
+        create.tiling = query.tiling;
+        create.usage = usage;
+        create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateImage(state->device, &create, nullptr, &image), "create imported AHB image");
+        auto import = structure<VkImportAndroidHardwareBufferInfoANDROID>(
+            VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID);
+        import.buffer = source->nativeBuffer();
+        auto dedicated = structure<VkMemoryDedicatedAllocateInfo>(
+            VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
+        dedicated.image = image;
+        import.pNext = &dedicated;
+        auto allocation = structure<VkMemoryAllocateInfo>(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+        allocation.pNext = &import;
+        allocation.allocationSize = hardware.allocationSize;
+        while (allocation.memoryTypeIndex < state->memory.memoryTypeCount &&
+               !(hardware.memoryTypeBits & (1u << allocation.memoryTypeIndex)))
+            ++allocation.memoryTypeIndex;
+        if (allocation.memoryTypeIndex == state->memory.memoryTypeCount)
+            return Error{ErrorCode::Unsupported, "AHB image has no compatible memory type"};
+        check(vkAllocateMemory(state->device, &allocation, nullptr, &memory),
+              "import AHB image memory");
+        check(vkBindImageMemory(state->device, image, memory, 0), "bind AHB image memory");
+        if (sampled) {
+            SamplerDescription description{format.format, externalFormat.externalFormat, yuv};
+            if (yuv) {
+                auto features = format.formatFeatures;
+                if (!(features & (VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
+                                  VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT)))
+                    return Error{ErrorCode::Unsupported,
+                                 "AHB image exposes no chroma sample locations"};
+                description.x = description.y =
+                    (features & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT)
+                        ? VK_CHROMA_LOCATION_COSITED_EVEN
+                        : VK_CHROMA_LOCATION_MIDPOINT;
+            }
+            sampler = nearestSampler(state, description);
+            auto conversion = structure<VkSamplerYcbcrConversionInfo>(
+                VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO);
+            conversion.conversion = sampler->conversion;
+            auto info = structure<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+            if (conversion.conversion)
+                info.pNext = &conversion;
+            info.image = image;
+            info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            info.format = format.format;
+            info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            check(vkCreateImageView(state->device, &info, nullptr, &view),
+                  "create sampled AHB view");
+        }
+        external = std::move(source);
+        initialized = true; // External contents are preserved; never clear on import.
+        return {};
+    }
+#endif
     VulkanImage(std::shared_ptr<DeviceState> s, ImageDesc d, std::size_t count)
         : state(std::move(s)), desc(d), words(count) {}
     ~VulkanImage() override {
@@ -654,8 +881,11 @@ struct VulkanImage final : Buffer {
         create.arrayLayers = 1;
         create.samples = VK_SAMPLE_COUNT_1_BIT;
         create.tiling = VK_IMAGE_TILING_OPTIMAL;
-        create.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (desc.format == kernel::ImageFormat::RGBA8 && desc.dimensions == 2) {
+            usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+            sampler = nearestSampler(state, {format});
+        }
+        create.usage = usage;
         create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageFormatProperties limits{};
@@ -690,6 +920,8 @@ struct VulkanImage final : Buffer {
     }
 };
 VkDescriptorType bindingType(KernelSource const &source, std::size_t i) {
+    if (!source.resources.empty() && source.resources[i].sampled)
+        return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     return !source.resources.empty() && source.resources[i].image
                ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -701,6 +933,8 @@ struct VulkanKernel final : Kernel {
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    std::vector<std::shared_ptr<VulkanSampler>> immutableSamplers;
+    std::vector<std::shared_ptr<VulkanKernel>> variants;
     VulkanKernel(std::shared_ptr<DeviceState> s, KernelSource src)
         : state(std::move(s)), description(std::move(src)) {}
     VulkanKernel(VulkanKernel const &) = delete;
@@ -725,8 +959,10 @@ struct VulkanKernel final : Kernel {
               "vkCreateShaderModule");
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         for (std::uint32_t i = 0; i < description.bindings.size(); ++i)
-            bindings.push_back(
-                {i, bindingType(description, i), 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+            bindings.push_back({i, bindingType(description, i), 1, VK_SHADER_STAGE_COMPUTE_BIT,
+                                !immutableSamplers.empty() && immutableSamplers[i]
+                                    ? &immutableSamplers[i]->sampler
+                                    : nullptr});
         auto set = structure<VkDescriptorSetLayoutCreateInfo>(
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
         set.bindingCount = static_cast<std::uint32_t>(bindings.size());
@@ -754,6 +990,20 @@ struct VulkanKernel final : Kernel {
         check(
             vkCreateComputePipelines(state->device, VK_NULL_HANDLE, 1, &create, nullptr, &pipeline),
             "vkCreateComputePipelines");
+    }
+    std::shared_ptr<VulkanKernel> sampledVariant(std::vector<BufferHandle> const &buffers) {
+        std::vector<std::shared_ptr<VulkanSampler>> samplers(description.bindings.size());
+        for (std::size_t i = 0; i < samplers.size(); ++i)
+            if (bindingType(description, i) == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                samplers[i] = static_cast<VulkanImage *>(buffers[i].get())->sampler;
+        for (auto const &variant : variants)
+            if (variant->immutableSamplers == samplers)
+                return variant;
+        auto variant = std::make_shared<VulkanKernel>(state, description);
+        variant->immutableSamplers = std::move(samplers);
+        variant->initialize();
+        variants.push_back(variant);
+        return variant;
     }
 };
 struct SubmissionSlot {
@@ -823,11 +1073,13 @@ struct SubmissionSlot {
             descriptorCapacity = std::max(descriptorCapacity, descriptors);
             VkDescriptorPoolSize sizes[] = {
                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, static_cast<std::uint32_t>(descriptorCapacity)},
-                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, static_cast<std::uint32_t>(descriptorCapacity)}};
+                {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, static_cast<std::uint32_t>(descriptorCapacity)},
+                {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                 static_cast<std::uint32_t>(descriptorCapacity)}};
             auto create = structure<VkDescriptorPoolCreateInfo>(
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
             create.maxSets = static_cast<std::uint32_t>(setCapacity);
-            create.poolSizeCount = 2;
+            create.poolSizeCount = 3;
             create.pPoolSizes = sizes;
             check(vkCreateDescriptorPool(state->device, &create, nullptr, &descriptorPool),
                   "create descriptor pool");
@@ -927,8 +1179,18 @@ struct ReadbackResult {
 #ifdef LUTILS_EXTERNAL_MEMORY
 struct ExternalSubmission {
     struct Resource {
+        BufferHandle handle;
         std::shared_ptr<VulkanBuffer> buffer;
+        std::shared_ptr<VulkanImage> image;
         Access access;
+        Result<FileDescriptor> exportFence() const {
+            return buffer ? buffer->external->exportSyncFile(access)
+                          : image->external->exportSyncFile(access);
+        }
+        Result<void> importFence(int const fd) const {
+            return buffer ? buffer->external->importSyncFile(fd, access)
+                          : image->external->importSyncFile(fd, access);
+        }
     };
     std::shared_ptr<DeviceState> state;
     std::vector<Resource> resources;
@@ -944,29 +1206,34 @@ struct ExternalSubmission {
     }
     void add(BufferHandle const &handle, Access access) {
         auto buffer = std::dynamic_pointer_cast<VulkanBuffer>(handle);
-        if (!buffer || !buffer->external)
+        auto image = std::dynamic_pointer_cast<VulkanImage>(handle);
+        if ((!buffer || !buffer->external) && (!image || !image->external))
             return;
         for (auto &r : resources) {
-            if (r.buffer == buffer) {
+            if (r.handle == handle) {
                 if (r.access != access)
                     r.access = Access::ReadWrite;
                 return;
             }
-            if (r.buffer->aliases(*buffer))
+            if (r.handle->aliases(*handle))
                 throw Failure{
                     "use one canonical imported buffer per external allocation in a submission"};
         }
-        resources.push_back({std::move(buffer), access});
+        resources.push_back({handle, std::move(buffer), std::move(image), access});
     }
     void prepare(std::vector<Command> const &commands) {
         for (auto const &command : commands)
             if (auto const *d = std::get_if<Dispatch>(&command))
                 for (std::size_t i = 0; i < d->buffers.size(); ++i)
                     add(d->buffers[i], d->kernel->source().bindings[i]);
+            else if (auto const *copy = std::get_if<CopyImageRegion>(&command)) {
+                add(copy->source, Access::Read);
+                add(copy->destination, Access::Write);
+            }
         waits.reserve(resources.size());
         stages.assign(resources.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
         for (auto const &r : resources) {
-            auto fence = r.buffer->external->exportSyncFile(r.access);
+            auto fence = r.exportFence();
             if (!fence)
                 throw Failure{fence.error().message};
             auto create = structure<VkSemaphoreCreateInfo>(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO);
@@ -995,6 +1262,31 @@ struct ExternalSubmission {
     }
     void ownership(VkCommandBuffer command, bool acquire) {
         for (auto const &r : resources) {
+            if (r.image) {
+                auto transition =
+                    structure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+                transition.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+                transition.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                transition.srcQueueFamilyIndex =
+                    acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT : state->family;
+                transition.dstQueueFamilyIndex =
+                    acquire ? state->family : VK_QUEUE_FAMILY_FOREIGN_EXT;
+                VkAccessFlags const mask =
+                    VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT |
+                    (r.access == Access::Read
+                         ? 0
+                         : VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+                transition.srcAccessMask = acquire ? 0 : mask;
+                transition.dstAccessMask = acquire ? mask : 0;
+                transition.image = r.image->image;
+                transition.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                auto const stages =
+                    VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+                vkCmdPipelineBarrier(command, acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : stages,
+                                     acquire ? stages : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                                     nullptr, 0, nullptr, 1, &transition);
+                continue;
+            }
             auto barrier =
                 structure<VkBufferMemoryBarrier>(VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
             barrier.srcQueueFamilyIndex = acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT : state->family;
@@ -1035,7 +1327,7 @@ struct ExternalSubmission {
         if (fd == -1)
             return; // Vulkan permits an already-signaled payload.
         for (auto const &r : resources) {
-            auto done = r.buffer->external->importSyncFile(fd, r.access);
+            auto done = r.importFence(fd);
             if (!done)
                 throw Failure{done.error().message};
         }
@@ -1192,6 +1484,33 @@ struct CommandRecorder {
     }
     void initialize(Upload const &c) { initialize(c.buffer); }
     void initialize(Readback const &c) { initialize(c.buffer); }
+    void initialize(CopyImageRegion const &c) {
+        initialize(c.source);
+        initialize(c.destination);
+    }
+    void operator()(CopyImageRegion const &copy) {
+        auto &source = *static_cast<VulkanImage *>(copy.source.get());
+        auto &destination = *static_cast<VulkanImage *>(copy.destination.get());
+        auto const command = submission.slot->command;
+        if (copy.background) {
+            VkClearColorValue color{};
+            std::copy(copy.background->begin(), copy.background->end(), color.float32);
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(command, destination.image, VK_IMAGE_LAYOUT_GENERAL, &color, 1,
+                                 &range);
+            orderedBarrier(command);
+        }
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.srcOffset = {static_cast<std::int32_t>(copy.sourceX),
+                            static_cast<std::int32_t>(copy.sourceY), 0};
+        region.dstOffset = {static_cast<std::int32_t>(copy.destinationX),
+                            static_cast<std::int32_t>(copy.destinationY), 0};
+        region.extent = {copy.width, copy.height, 1};
+        vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_GENERAL, destination.image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    }
     void initialize(Dispatch const &c) {
         for (auto const &buffer : c.buffers)
             initialize(buffer);
@@ -1288,11 +1607,20 @@ void record(Submission &submission) {
     submission.external->prepare(submission.retained);
 #endif
     std::size_t descriptors = 0, sets = 0;
-    for (auto const &command : submission.retained) {
-        if (auto const *d = std::get_if<Dispatch>(&command)) {
-            if (d->buffers.size() > UINT32_MAX - descriptors || sets == UINT32_MAX)
+    for (auto &command : submission.retained) {
+        if (auto *d = std::get_if<Dispatch>(&command)) {
+            auto &kernel = *static_cast<VulkanKernel *>(d->kernel.get());
+            if (!kernel.pipeline)
+                d->kernel = kernel.sampledVariant(d->buffers);
+            // The supported YUV420 format has at most three planes. Vulkan can
+            // consume one descriptor per plane for a single immutable sampler.
+            auto count = d->buffers.size();
+            for (auto const &resource : d->kernel->source().resources)
+                if (resource.sampled)
+                    count += 2;
+            if (count > UINT32_MAX - descriptors || sets == UINT32_MAX)
                 throw Failure{"submission too large"};
-            descriptors += d->buffers.size();
+            descriptors += count;
             ++sets;
         } else if (auto const *r = std::get_if<Readback>(&command)) {
             // Allocate before queue submission, so completion/recycling need no
@@ -1409,6 +1737,30 @@ struct VulkanDevice final : Device {
             return Error{ErrorCode::InvalidArgument, "resident buffer belongs to another device"};
         return result;
     }
+    Result<BufferHandle> importImage(std::shared_ptr<NativeImage> const &image) override {
+#if defined(__ANDROID__)
+        auto source = std::dynamic_pointer_cast<AndroidHardwareBufferImage>(image);
+        if (source) {
+            auto const d = source->description();
+            ImageDesc desc{kernel::ImageFormat::RGBA8, 2, {d.width, d.height, 1}};
+            auto count = imageWordCount(desc);
+            if (!count)
+                return count.error();
+            try {
+                auto result = std::make_shared<VulkanImage>(state, desc, count.value());
+                auto imported = result->importHardwareBuffer(std::move(source));
+                if (!imported)
+                    return imported.error();
+                return BufferHandle{std::move(result)};
+            } catch (Failure const &e) {
+                return deviceError(e);
+            }
+        }
+#endif
+        (void)image;
+        return Error{ErrorCode::Unsupported,
+                     "native image is not supported by this Vulkan backend"};
+    }
     bool get(BufferHandle const &buffer) const {
         if (auto const *image = dynamic_cast<VulkanImage *>(buffer.get()))
             return image->state == state;
@@ -1457,10 +1809,13 @@ struct VulkanDevice final : Device {
                          "module must use SPIR-V <= 1.3 and LocalSize matching "
                          "kernel metadata"};
         auto local = source.localSize;
-        std::size_t images = 0;
+        std::size_t images = 0, sampled = 0;
         for (auto const &r : source.resources)
-            images += r.image.has_value();
-        auto buffers = source.bindings.size() - images;
+            if (r.sampled)
+                ++sampled;
+            else
+                images += r.image.has_value();
+        auto buffers = source.bindings.size() - images - sampled;
         VkPhysicalDeviceFeatures features{};
         vkGetPhysicalDeviceFeatures(state->physical, &features);
         for (std::size_t i = 5; i < source.spirv.size(); i += source.spirv[i] >> 16) {
@@ -1495,13 +1850,18 @@ struct VulkanDevice final : Device {
             buffers > limits.maxDescriptorSetStorageBuffers ||
             images > limits.maxPerStageDescriptorStorageImages ||
             images > limits.maxDescriptorSetStorageImages ||
-            source.bindings.size() > limits.maxPerStageResources ||
+            sampled * 3 > limits.maxPerStageDescriptorSampledImages ||
+            sampled * 3 > limits.maxDescriptorSetSampledImages ||
+            sampled * 3 > limits.maxPerStageDescriptorSamplers ||
+            sampled * 3 > limits.maxDescriptorSetSamplers ||
+            source.bindings.size() + sampled * 2 > limits.maxPerStageResources ||
             source.parameterWords * 4 > limits.maxPushConstantsSize ||
             source.sharedMemoryBytes > limits.maxComputeSharedMemorySize)
             return Error{ErrorCode::Unsupported, "kernel exceeds Vulkan device limits"};
         try {
             auto result = std::make_shared<VulkanKernel>(state, std::move(source));
-            result->initialize();
+            if (!sampled)
+                result->initialize();
             return KernelHandle{std::move(result)};
         } catch (Failure const &e) {
             return deviceError(e);
@@ -1534,6 +1894,10 @@ struct VulkanDevice final : Device {
         return *data.value();
     }
     Result<void> validateCommand(Upload const &c) const {
+        if (auto const *image = dynamic_cast<VulkanImage const *>(c.buffer.get());
+            image && image->external)
+            return Error{ErrorCode::Unsupported,
+                         "native images require direct commands or CPU mapping"};
 #ifdef LUTILS_EXTERNAL_MEMORY
         if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
             return Error{ErrorCode::Unsupported,
@@ -1544,6 +1908,10 @@ struct VulkanDevice final : Device {
                    : Result<void>{Error{ErrorCode::InvalidArgument, "foreign upload buffer"}};
     }
     Result<void> validateCommand(Readback const &c) const {
+        if (auto const *image = dynamic_cast<VulkanImage const *>(c.buffer.get());
+            image && image->external)
+            return Error{ErrorCode::Unsupported,
+                         "native images require direct commands or CPU mapping"};
 #ifdef LUTILS_EXTERNAL_MEMORY
         if (auto const *b = dynamic_cast<VulkanBuffer const *>(c.buffer.get()); b && b->external)
             return Error{ErrorCode::Unsupported,
@@ -1553,13 +1921,34 @@ struct VulkanDevice final : Device {
                    ? Result<void>{}
                    : Result<void>{Error{ErrorCode::InvalidArgument, "foreign readback buffer"}};
     }
+    Result<void> validateCommand(CopyImageRegion const &copy) const {
+        auto const *source = dynamic_cast<VulkanImage const *>(copy.source.get());
+        auto const *destination = dynamic_cast<VulkanImage const *>(copy.destination.get());
+        if (!source || !destination || source->state != state || destination->state != state)
+            return Error{ErrorCode::InvalidArgument, "foreign copy image"};
+        if (!(source->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+            !(destination->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+            return Error{ErrorCode::Unsupported, "image does not support transfer access"};
+        return {};
+    }
     Result<void> validateCommand(Dispatch const &d) const {
         auto *k = dynamic_cast<VulkanKernel *>(d.kernel.get());
         if (!k || k->state != state)
             return Error{ErrorCode::InvalidArgument, "foreign kernel"};
-        for (auto const &b : d.buffers)
+        for (std::size_t i = 0; i < d.buffers.size(); ++i) {
+            auto const &b = d.buffers[i];
             if (!get(b))
                 return Error{ErrorCode::InvalidArgument, "foreign buffer"};
+            if (auto const *image = dynamic_cast<VulkanImage const *>(b.get())) {
+                auto sampled =
+                    bindingType(k->description, i) == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                VkImageUsageFlags const usage =
+                    sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : VK_IMAGE_USAGE_STORAGE_BIT;
+                if (!(image->usage & usage) || (sampled && !image->sampler))
+                    return Error{ErrorCode::Unsupported,
+                                 "image does not support the shader binding access"};
+            }
+        }
         auto local = k->description.localSize;
         auto const *limits = state->properties.limits.maxComputeWorkGroupCount;
         if ((d.extent.x / local.x + (d.extent.x % local.x != 0)) > limits[0] ||

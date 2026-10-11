@@ -38,6 +38,7 @@
 #include "game_of_life.hpp"
 #include "layout.hpp"
 #include "line.hpp"
+#include "nearest_sample.hpp"
 #include "sphere_tracer.hpp"
 #include "typed_add.hpp"
 #include "visualize_rays.hpp"
@@ -229,6 +230,59 @@ void formats(Backend &backend) {
     check(require(backend.device().download(image))[0] == 0x00030201);
 }
 
+void samplingAndCopy(Backend &backend) {
+    BufferResource<kernel::cpu::RGBA8, Dim::D2> pixels{{3, 2}};
+    for (std::size_t i = 0; i < pixels.size(); ++i)
+        pixels.data()[i].data = {{static_cast<std::uint8_t>(i * 47), 0, 255, 255}};
+    BufferResource<vec2> positions{6};
+    positions[0] = {-1, -1};
+    positions[1] = {0.51f, 0.25f};
+    positions[2] = {1.1f, 0.25f};
+    positions[3] = {0.1f, 0.9f};
+    positions[4] = {0.5f, 0.9f};
+    positions[5] = {1, 1};
+    BufferResource<vec4> output{6};
+    require(backend.uploadImage<kernel::gpu::RGBA8>(&pixels));
+    require(backend.uploadBuffer(&positions));
+    require(backend.uploadBuffer(&output));
+    sampler_test::Nearest shader;
+    shader.image.attach(&pixels);
+    shader.positions.attach(&positions);
+    shader.output.attach(&output);
+    require(require(backend.execute(shader, {6, 1, 1}))->wait());
+    require(backend.downloadBuffer(&output));
+    for (std::size_t i = 0; i < 6; ++i) {
+        check(std::abs(output[i].x - float(i * 47) / 255.0f) < 0.00001f);
+        check(output[i].y == 0 && output[i].z == 1 && output[i].w == 1);
+    }
+    auto &device = backend.device();
+    auto source = require(device.createImage({kernel::gpu::RGBA8, 2, {2, 3, 1}}));
+    auto destination = require(device.createImage({kernel::gpu::RGBA8, 2, {4, 4, 1}}));
+    require(device.upload(source, {1, 2, 3, 4, 5, 6}));
+    CopyImageRegion copy{source, destination, 0, 1, 1, 1, 2, 2, std::array<float, 4>{{0, 1, 0, 1}}};
+    CommandList commands;
+    require(commands.copyImage(copy));
+    require(require(device.submit(commands))->wait());
+    auto data = require(device.download(destination));
+    for (std::size_t y = 0; y < 4; ++y)
+        for (std::size_t x = 0; x < 4; ++x)
+            check(data[y * 4 + x] == ((x >= 1 && x < 3 && y >= 1 && y < 3)
+                                          ? static_cast<Word>(3 + (y - 1) * 2 + x - 1)
+                                          : 0xff00ff00u));
+    copy.source = destination;
+    check(!commands.copyImage(copy));
+    copy.source = source;
+    copy.width = 3;
+    check(!commands.copyImage(copy));
+    copy.width = 0;
+    check(!commands.copyImage(copy));
+    copy.width = 2;
+    copy.background = {{std::numeric_limits<float>::quiet_NaN(),0,0,0}};
+    check(!commands.copyImage(copy));
+    auto bad = KernelTraits<sampler_test::Nearest>::source();
+    bad.bindings[0] = Access::Write;
+    check(!device.createKernel(bad));
+}
 int main(int argc, char **argv) {
     try {
         auto device = createCpuDevice();
@@ -247,6 +301,7 @@ int main(int argc, char **argv) {
         (void)argv;
 #endif
         Backend backend{require(std::move(device))};
+        samplingAndCopy(backend);
         BufferResource<float> a{21}, b{21}, c{21};
         for (int i = 0; i < 21; ++i) {
             a[i] = float(i);

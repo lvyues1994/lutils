@@ -59,8 +59,60 @@ auto bound = im::bindImage(device, image.value());
 调用者管理。多个平面可以共用一个 BLOB，也可以分别使用不同 BLOB。现有五种预设格式与 region plan
 均可使用此布局。GPU 使用原分配，执行器不创建 staging buffer、不上传或回读整帧。
 
-普通 VA 使用 CPU 路径。Android 原生 RGBA/YUV AHB、AImage 和裸 dma fd 尚未作为图像导入接口提供；
-原生图像需要真实的格式、pixel stride、外部图像能力及生产者同步信息，不能标记为 BLOB。
+普通 VA 使用 CPU 路径。裸 dma fd 在 Android 上仍无导入接口。
+
+## 原生 RGBA/YUV 图像
+
+`image_memory` 提供 `importAndroidImage(AHardwareBuffer*, options)` 和
+`adoptAndroidImage(AImageOwner, options)`，头文件为 `<lutils/image/AndroidImage.hpp>`。
+支持单层、非 protected 的 RGBA8 和 8-bit YUV420；同样要求 API 31 的稳定 buffer ID。
+
+原生图像通过 `NativeImage` 表达，不提供虚构的线性 offset。CPU 使用 `lockPlanes` 的实际
+row stride、pixel stride 和 Y/Cb/Cr 顺序。YUV 在 `FrameDesc` 中采用逻辑 `i420()` 三平面；
+这不表示 AHB 的物理存储为连续 I420，也不预设它是 NV12。YUV 尺寸和裁剪坐标必须偶数对齐。
+色彩信息由 `options.color` 显式提供；默认保留 Unknown。
+
+| 区域操作 | CPU | Vulkan GPU |
+|---|---|---|
+| 原生 RGBA → 原生 RGBA | 支持 | 直接 image copy，填充使用 image clear |
+| 原生 RGBA → 线性 RGBA | 支持 | nearest 采样写入 storage buffer |
+| 原生 YUV420 → 线性 I420 | 支持 | 原始 Y/Cb/Cr 采样，无矩阵或范围转换 |
+| 原生 YUV420 输出 | 支持 | 返回 Unsupported |
+| 线性输入 → 原生输出 | 支持 | 返回 Unsupported |
+
+GPU 线性输出可以使用 AHB BLOB 或设备 buffer。原生输入要求合适的 GPU usage 和设备外部图像能力；
+CPU 映射要求对应的 CPU usage。填充原生 RGBA 时，GPU 目标必须覆盖完整 AHB。
+GPU 路径不创建整帧 staging；不支持的组合返回错误。
+
+```cpp
+auto image = im::importAndroidImage(hardwareBuffer, {{}, producerLease, acquireFence});
+// 检查 Result。区域以可见图像为坐标系，output 为调用者提供的兼容资源。
+auto plan = im::RegionPlan::crop(image.value().description(), {x, y, width, height});
+auto executor = im::createDeviceRegionExecutor(device); // CPU 用 createCpuRegionExecutor()
+auto done = executor.value()->submit(plan.value(), image.value(), output);
+```
+
+`importAndroidImage` acquire 一个 AHB 引用，原始引用仍由调用者管理。若生产者可能重用存储，
+应通过 `owner` 保留对应帧租约，直至映射和 GPU 使用结束。
+
+### AImage 的接管
+
+```cpp
+// reader 是拥有 AImageReader 的 shared_ptr，frame/fd 来自 acquireNextImageAsync。
+co::FileDescriptor acquire{fd};
+auto image = im::adoptAndroidImage(im::AImageOwner{frame}, {{}, reader, acquire.get()});
+```
+
+接管会消费 `AImageOwner`，失败时也释放帧。`owner` 必须实际保有该帧的 AImageReader，
+不要再手动 delete image 或 reader。返回资源只读，自动采用 AImage crop rect；
+CPU mapping 和 GPU Completion 保留租约，完成后才允许 BufferQueue 回收帧。
+接管前不要调用 `AImage_getPlaneData/RowStride/PixelStride`：这些接口会保留 AImage 的 CPU lock，
+并且没有独立 unlock。需要 CPU 访问时使用返回资源的 `nativeStorage()->map()`。
+
+GPU 原生采样也可用于自定义 C++ 算子：`kernel::SamplerBinding<slot>` 和
+`kernel::sampleNearest(binding, uv)` 生成 `sampler2D`，采用归一化坐标、nearest、clamp-to-edge。
+RGBA 返回 RGBA；YUV 返回 `(Cr/255, Y/255, Cb/255, 1)`，使用 `RGB_IDENTITY` 保留原始码值。
+运行时按外部格式缓存 immutable sampler 和 pipeline，缓存不持有 AImage 帧。
 
 ## 同步与生命周期
 
@@ -90,20 +142,26 @@ NDK r28 默认生成支持 16 KB 页的 ELF，见 [Android 页大小支持说明
 
 ## 本次验证
 
-2026-10-10，NDK r28c、arm64-v8a、编译 API 29；设备为 Android 16 / API 36、Adreno 830：
+2026-10-11，NDK r28c、arm64-v8a、编译 API 29；设备为 Android 16 / API 36、Adreno 830：
 
-- Android CTest 共 83 项：82 项通过，1 项 Vulkan FP16 测试因设备能力不足跳过。
+- Android CTest 共 86 项：85 项通过，1 项 Vulkan FP16 测试因设备能力不足跳过。
   运行测试通过 adb 在设备执行，编译拒绝与 kernelc 测试在 PC 执行。
-- 不启用 Vulkan 和生成算子的 `android-arm64` 基础预设另有 33 项测试，全部通过。
+- 不启用 Vulkan 和生成算子的 `android-arm64` 基础预设另有 35 项测试，全部通过。
 - 普通 CPU/Vulkan 转换、裁剪、填充及现有 shader 测试通过。设备缺少 Float64，已验证内核创建返回
   Unsupported，然后继续执行其余 shader 测试。
 - AHB BLOB 的 RGBA8、UYVY、YUYV、NV12、I420 裁剪与背景填充通过 CPU/Vulkan 对照；
   包括单块/多块分配、非紧密 stride、保护字节、IPC 句柄别名、连续提交和资源保活。
   GPU 路径的 staging/readback buffer 创建计数均为零。
 - 同步测试包含 CPU 映射等待 GPU fence；失败 fence 另用 ioctl/poll 故障注入验证错误传播。
-- 安装并移动 SDK 后，下游预编译算子和新生成 shader 均能交叉编译并在设备运行；已生成 TGZ SDK。
-- Linux CTest 共 85 项：83 项通过，2 项真实 dma-buf 测试在沙箱跳过；随后在真实分配上分别补测
-  CPU 和 RTX 5070 Ti Vulkan 路径，均通过，后者启用了 Vulkan validation。
+- 原生 RGBA/YUV CPU 操作、RGBA Vulkan copy/clear、RGBA/YUV nearest 采样到线性输出通过；
+  采样覆盖 0–255 码值、裁剪偏移、非对齐输出和保护字节，staging/readback 创建计数为零。
+- 私有 BufferQueue 产生的 RGBA/YUV AImage 通过接管、只读保护和生命周期测试，包括先释放调用方
+  resource/reader、由 mapping 或 GPU Completion 保留帧。未使用摄像头；MediaCodec 解码路径未验证。
+- 安装并移动 SDK 后，下游预编译算子和新生成 shader 均能交叉编译并在设备运行；
+  原生图像和 AImage 接口也完成安装包链接检查。
+- Linux CTest 共 86 项：84 项通过，2 项真实 dma-buf 测试在沙箱跳过。
+  新增采样与 image copy 经 Lavapipe 的 Vulkan validation 检查，无警告或错误。
+- CPU 原生映射边界与裁剪填充通过 ASan、UBSan 和 LeakSanitizer 检查。
 
 Android 测试 ELF 的 LOAD 对齐为 16 KB；本次设备实际页大小为 4 KB，尚无 16 KB 设备运行结果。
 Android Vulkan validation layer 未在本次启用。新增 CI 作交叉编译与主机工具检查，不包含连接设备测试，
