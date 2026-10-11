@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.21)
+
 function(run)
     execute_process(COMMAND ${ARGN} RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT status EQUAL 0)
