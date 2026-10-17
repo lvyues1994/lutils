@@ -1,6 +1,6 @@
 find_package(Threads REQUIRED)
 add_library(lutils_compute STATIC src/Runtime.cpp src/CpuExecution.cpp src/Memory.cpp)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_sources(lutils_compute PRIVATE src/LinuxDmaBuf.cpp)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)

@@ -40,7 +40,7 @@ def read_run(path):
 
 
 KEYS = ("operation", "target", "scope", "elements", "width", "height",
-        "row_alignment", "element_offset", "positive_percent")
+        "row_alignment", "element_offset", "positive_percent", "memory", "split")
 
 
 def write_csv(path, fields, rows):
@@ -60,9 +60,13 @@ def main():
     for path in args.inputs:
         for case in read_run(path):
             identity = {"run": path.stem, **{k: case.get(k, "") for k in KEYS}}
+            identity.update({k: case.get(k, "") for k in
+                             ("selected_target", "calibration_ns", "source_stride", "destination_stride")})
             cases.append({**identity, **{k: case[k] for k in
                           ("median_ns", "min_ns", "max_ns", "mad_ns")},
-                          "million_elements_per_second": case["elements"] * 1000 / case["median_ns"]})
+                          "million_elements_per_second": (
+                              "" if case["scope"] == "map_finish" else
+                              case["elements"] * 1000 / case["median_ns"])})
             for i, sample in enumerate(case["samples"]):
                 samples.append({**identity, "sample": i, **sample,
                                 "ns_per_call": sample["elapsed_ns"] / sample["iterations"]})

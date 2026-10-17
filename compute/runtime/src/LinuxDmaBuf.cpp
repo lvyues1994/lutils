@@ -20,7 +20,11 @@ Error osError(char const *operation) {
 template <class T> int ioctlRetry(int fd, unsigned long request, T *value) {
     int result;
     do {
+#ifdef __ANDROID__
+        result = ioctl(fd, static_cast<unsigned int>(request), value);
+#else
         result = ioctl(fd, request, value);
+#endif
     } while (result < 0 && (errno == EINTR || errno == EAGAIN));
     return result;
 }

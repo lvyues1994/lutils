@@ -2,12 +2,14 @@
 #include <lutils/compute/Runtime.hpp>
 #include <lutils/erasure.hpp>
 #include <lutils/image/CpuConversionExecutor.hpp>
+#include <lutils/image/CpuTuning.hpp>
 #include <lutils/image/Frame.hpp>
 #include <lutils/image/ImageResource.hpp>
 #include <lutils/image/SimdConversion.hpp>
 #include <lutils/simd.hpp>
 #include <stdexcept>
 #ifdef __ANDROID__
+#include <lutils/compute/LinuxDmaBuf.hpp>
 #include <lutils/image/AndroidImage.hpp>
 #endif
 #ifdef WITH_SHADER
@@ -41,6 +43,7 @@ void check(bool value) {
 }
 int main() {
 #ifdef __ANDROID__
+    check(!co::DmaBufMemory::import(-1));
     check(!im::importAndroidImage(nullptr));
     check(!im::adoptAndroidImage(im::AImageOwner{}, {}));
 #endif
@@ -83,6 +86,8 @@ int main() {
     check(im::row(output.view().planes[1], 0)[0] == std::byte{11});
     check(im::row(output.view().planes[1], 0)[1] == std::byte{31});
     auto cpuPlan = take(im::CpuConversionPlan::prepare(desc, outDesc));
+    auto tuned = take(im::tuneCpuConversion(im::readOnly(input.view()), output.view()));
+    take(tuned.plan.run(im::readOnly(input.view()), output.view()));
     auto cpu = im::createCpuConversionExecutor();
     take(cpu->run(cpuPlan, take(im::ImageResource::borrow(im::readOnly(input.view()))),
                   take(im::ImageResource::borrow(output.view()))));

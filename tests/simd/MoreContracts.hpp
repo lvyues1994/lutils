@@ -105,8 +105,41 @@ template <class Integer, class Floating, class A> void integerToFloat() {
         for (std::size_t i = 0; i < V::size; ++i)
             check(result.lane(i) == static_cast<Floating>(input.lane(i)));
     }
+    Integer const edges[]{std::numeric_limits<Integer>::lowest(),
+                           std::numeric_limits<Integer>::max(), Integer{0}, Integer{1},
+                           Integer{16777215}, Integer{16777216}, Integer{16777217}};
+    for (std::size_t base = 0; base < 7; ++base) {
+        V input;
+        for (std::size_t i = 0; i < V::size; ++i)
+            input.set_lane(i, edges[(base + i) % 7]);
+        auto out = s::convert<Floating>(input);
+        for (std::size_t i = 0; i < V::size; ++i)
+            check(out.lane(i) == static_cast<Floating>(input.lane(i)));
+        if constexpr (std::is_signed_v<Integer> && std::is_same_v<Floating, float>) {
+            input = V{-16777217};
+            check(s::all(s::convert<Floating>(input) == s::Batch<Floating, A>{Floating{-16777216}}));
+        }
+    }
+}
+template <class T, class A> void comparisonBits() {
+    using V = s::Batch<T, A>;
+    for (unsigned bits = 0; bits < (1u << V::size); ++bits) {
+        V a, b{std::numeric_limits<T>::max()};
+        for (std::size_t i = 0; i < V::size; ++i)
+            a.set_lane(i, ((bits >> i) & 1) ? std::numeric_limits<T>::lowest()
+                                            : std::numeric_limits<T>::max());
+        auto less = a < b, equal = a == b;
+        for (std::size_t i = 0; i < V::size; ++i) {
+            check(less.lane(i) == bool((bits >> i) & 1));
+            check(equal.lane(i) != less.lane(i));
+        }
+    }
 }
 template <class A> void moreContracts() {
+    comparisonBits<std::int32_t, A>();
+    comparisonBits<std::uint32_t, A>();
+    comparisonBits<std::int64_t, A>();
+    comparisonBits<std::uint64_t, A>();
     widePair<std::uint8_t, std::uint16_t, A>();
     widePair<std::uint8_t, std::uint32_t, A>();
     widePair<std::uint8_t, std::uint64_t, A>();

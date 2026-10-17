@@ -130,6 +130,10 @@ template <class To, class From, class A,
 LUTILS_SIMD_INLINE Batch<To, A> convert(Batch<From, A> value) noexcept {
     Batch<To, A> out;
     static_assert(out.size == value.size, "convert requires equal lane counts");
+    if constexpr (detail::ConvertNative<To, From, A>::available) {
+        detail::ConvertNative<To, From, A>::run(detail::Access::data(out), detail::Access::data(value));
+        return out;
+    }
     for (std::size_t i = 0; i < value.size; ++i)
         out.set_lane(i, static_cast<To>(value.lane(i)));
     return out;

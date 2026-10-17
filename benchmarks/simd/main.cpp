@@ -1,4 +1,5 @@
 #include "Micro.hpp"
+#include "Benchmark.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -6,6 +7,10 @@
 #include <iostream>
 #include <limits>
 #include <lutils/image/SimdConversion.hpp>
+#if __has_include(<lutils/image/CpuTuning.hpp>)
+#include <lutils/image/CpuTuning.hpp>
+#define LUTILS_BENCH_TUNING 1
+#endif
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,28 +19,8 @@
 #endif
 namespace s = lutils::simd;
 namespace im = lutils::image;
-using Clock = std::chrono::steady_clock;
+using namespace benchmark;
 namespace {
-void check(bool ok) {
-    if (!ok)
-        throw std::runtime_error("benchmark validation failed");
-}
-template <class T> T take(lutils::Result<T> r) {
-    if (!r)
-        throw std::runtime_error(r.error().message);
-    return std::move(r).value();
-}
-void take(lutils::Result<void> r) {
-    if (!r)
-        throw std::runtime_error(r.error().message);
-}
-int cpu() {
-#if defined(__linux__)
-    return sched_getcpu();
-#else
-    return -1;
-#endif
-}
 struct Backend {
     s::Target target;
     char const *name;
@@ -52,68 +37,6 @@ std::vector<Backend> backends() {
     out.push_back({s::Target::Neon, "neon", micro::neon});
 #endif
     return out;
-}
-struct Sample {
-    std::size_t iterations;
-    std::int64_t ns;
-    int before;
-    int after;
-};
-volatile std::uint64_t consumed = 0;
-template <class Run, class Validate>
-void measure(std::string const &fields, Run run, Validate validate, bool smoke,
-             Clock::time_point deadline) {
-    validate();
-    consumed = run(); // Explicit warmup, correctness outside timed regions.
-    auto timed = [&](std::size_t n) {
-        int before = cpu();
-        auto start = Clock::now();
-        std::uint64_t value = 0;
-        for (std::size_t i = 0; i < n; ++i)
-            value ^= run();
-        auto end = Clock::now();
-        consumed = value;
-        return Sample{n, std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count(),
-                      before, cpu()};
-    };
-    std::size_t iterations = 1;
-    if (!smoke) {
-        auto probe = timed(1);
-        iterations = std::min(
-            std::size_t{100000},
-            std::max(std::size_t{1},
-                     static_cast<std::size_t>(2000000 / std::max(std::int64_t{1}, probe.ns))));
-    }
-    std::vector<Sample> samples;
-    for (int i = 0; i < (smoke ? 1 : 9); ++i) {
-        if (Clock::now() > deadline)
-            throw std::runtime_error("benchmark exceeded 45 second budget");
-        samples.push_back(timed(iterations));
-    }
-    validate();
-    std::vector<double> times;
-    for (auto const &sample : samples)
-        times.push_back(double(sample.ns) / double(sample.iterations));
-    std::sort(times.begin(), times.end());
-    double median = times[times.size() / 2];
-    std::vector<double> deviations;
-    for (auto t : times)
-        deviations.push_back(std::abs(t - median));
-    std::sort(deviations.begin(), deviations.end());
-    std::cout << "{\"type\":\"case\"," << fields
-              << ",\"validated\":true,\"warmups\":1,\"median_ns\":" << median
-              << ",\"min_ns\":" << times.front() << ",\"max_ns\":" << times.back()
-              << ",\"mad_ns\":" << deviations[deviations.size() / 2] << ",\"samples\":[";
-    bool first = true;
-    for (auto const &sample : samples) {
-        if (!first)
-            std::cout << ',';
-        first = false;
-        std::cout << "{\"iterations\":" << sample.iterations << ",\"elapsed_ns\":" << sample.ns
-                  << ",\"cpu_before\":" << sample.before << ",\"cpu_after\":" << sample.after
-                  << '}';
-    }
-    std::cout << "]}\n";
 }
 void primitives(bool smoke, Clock::time_point deadline) {
     auto sizes =
@@ -156,20 +79,14 @@ void primitives(bool smoke, Clock::time_point deadline) {
                     auto const &backend =
                         targets[(t + static_cast<std::size_t>(ordinal)) % targets.size()];
                     auto run = [&]() { return backend.function(op, data); };
-                    auto validate = [&]() {
-                        for (std::size_t i = 0; i < n; ++i) {
-                            data.wide[i] = static_cast<std::uint16_t>(data.bytes[i] + 1u);
-                            data.narrow[i] = static_cast<std::uint8_t>(
-                                std::min(data.words[i], std::uint16_t{255}) ^ 1);
-                            data.floats[i] = std::numeric_limits<float>::quiet_NaN();
-                            data.filtered[i] = INT32_MIN;
-                        }
-                        auto result = run();
+                    auto verify = [&](std::uint64_t result) {
                         if (op == micro::Operation::Sum)
                             check(result == sum);
                         else if (op == micro::Operation::Filter) {
                             check(result == reference.size());
                             check(std::equal(reference.begin(), reference.end(), data.filtered));
+                            check(std::all_of(data.filtered + result, data.filtered + n,
+                                              [](std::int32_t x) { return x == INT32_MIN; }));
                         } else
                             for (std::size_t i = 0; i < n; ++i) {
                                 if (op == micro::Operation::Widen)
@@ -181,43 +98,24 @@ void primitives(bool smoke, Clock::time_point deadline) {
                                     check(data.floats[i] == static_cast<float>(data.integers[i]));
                             }
                     };
+                    auto validate = [&]() {
+                        for (std::size_t i = 0; i < n; ++i) {
+                            data.wide[i] = static_cast<std::uint16_t>(data.bytes[i] + 1u);
+                            data.narrow[i] = static_cast<std::uint8_t>(
+                                std::min(data.words[i], std::uint16_t{255}) ^ 1);
+                            data.floats[i] = std::numeric_limits<float>::quiet_NaN();
+                            data.filtered[i] = INT32_MIN;
+                        }
+                        verify(run());
+                    };
                     std::string fields =
                         "\"operation\":\"" + std::string(names[static_cast<int>(op)]) +
                         "\",\"target\":\"" + backend.name +
                         "\",\"scope\":\"kernel\",\"elements\":" + std::to_string(n) +
                         ",\"element_offset\":1,\"positive_percent\":" + std::to_string(density);
-                    measure(fields, run, validate, smoke, deadline);
+                    measure(fields, run, validate, verify, smoke, deadline);
                 }
                 ++ordinal;
-            }
-        }
-    }
-}
-void imageReference(im::ConstFrameView const &src, im::FrameView const &dst, bool rgba) {
-    auto integer = [](std::byte b) { return std::to_integer<int>(b); };
-    auto q = [](int value) { return std::byte(std::clamp((value + 128) / 256, 0, 255)); };
-    for (std::size_t y = 0; y < src.desc.height; ++y) {
-        auto const *a = im::row(src.planes[0], y);
-        auto *out = im::row(dst.planes[0], y);
-        if (rgba) {
-            auto const *uv = im::row(src.planes[1], y / 2);
-            for (std::size_t x = 0; x < src.desc.width; ++x) {
-                int c = integer(a[x]) - 16, d = integer(uv[2 * (x / 2)]) - 128,
-                    e = integer(uv[2 * (x / 2) + 1]) - 128;
-                out[4 * x] = q(298 * c + 409 * e);
-                out[4 * x + 1] = q(298 * c - 100 * d - 208 * e);
-                out[4 * x + 2] = q(298 * c + 516 * d);
-                out[4 * x + 3] = std::byte{255};
-            }
-        } else {
-            for (std::size_t x = 0; x < src.desc.width; ++x)
-                out[x] = a[2 * x + 1];
-            if (y % 2 == 0) {
-                auto const *bottom =
-                    im::row(src.planes[0], std::min(y + 1, std::size_t(src.desc.height) - 1));
-                auto *uv = im::row(dst.planes[1], y / 2);
-                for (std::size_t x = 0; x < src.desc.width; ++x)
-                    uv[x] = std::byte((integer(a[2 * x]) + integer(bottom[2 * x]) + 1) / 2);
             }
         }
     }
@@ -228,7 +126,9 @@ void images(bool smoke, Clock::time_point deadline) {
         std::size_t alignment;
     };
     auto shapes = smoke ? std::vector<Shape>{{66, 5, 64}}
-                        : std::vector<Shape>{{640, 480, 1}, {1920, 1536, 1}, {642, 481, 64}};
+                        : std::vector<Shape>{{2, 5, 1}, {14, 5, 1}, {16, 5, 1}, {30, 5, 1},
+                                             {32, 5, 1}, {34, 5, 1}, {640, 480, 1},
+                                             {1920, 1536, 1}, {642, 481, 64}};
     for (auto shape : shapes)
         for (bool rgba : {false, true}) {
             im::FrameDesc desc{shape.width,
@@ -267,9 +167,24 @@ void images(bool smoke, Clock::time_point deadline) {
                                          im::row(ref.planes[p], y) + dstGeometry[p].rowBytes,
                                          im::row(dst.planes[p], y)));
             };
-            for (auto const &backend : backends()) {
+            auto targets = backends();
+            targets.push_back({s::Target::Automatic, "automatic", nullptr});
+#ifdef LUTILS_BENCH_TUNING
+            targets.push_back({s::Target::Automatic, "tuned", nullptr});
+#endif
+            for (auto const &backend : targets) {
                 auto plan = take(im::CpuConversionPlan::prepare(desc, outDesc, backend.target));
+                std::int64_t calibration = 0;
+#ifdef LUTILS_BENCH_TUNING
+                if (std::string(backend.name) == "tuned") {
+                    auto tuned = take(im::tuneCpuConversion(src, dst));
+                    plan = std::move(tuned.plan);
+                    calibration = tuned.elapsed.count();
+                }
+#endif
                 for (bool prepare : {false, true}) {
+                    if (prepare && std::string(backend.name) == "tuned")
+                        continue;
                     auto run = [&]() {
                         if (prepare) {
                             auto p =
@@ -296,8 +211,11 @@ void images(bool smoke, Clock::time_point deadline) {
                         "\",\"width\":" + std::to_string(shape.width) +
                         ",\"height\":" + std::to_string(shape.height) +
                         ",\"row_alignment\":" + std::to_string(shape.alignment) + ",\"elements\":" +
-                        std::to_string(std::uint64_t(shape.width) * shape.height);
-                    measure(fields, run, validateRun, smoke, deadline);
+                        std::to_string(std::uint64_t(shape.width) * shape.height) +
+                        ",\"selected_target\":\"" + s::target_name(plan.target()) +
+                        "\",\"calibration_ns\":" + std::to_string(calibration);
+                    measure(fields, run, validateRun, [&](std::uint64_t) { validate(); }, smoke,
+                            deadline);
                 }
             }
         }

@@ -12,8 +12,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
     parser.add_argument("--serial", required=True)
+    parser.add_argument("--timeout", type=int, help="remote deadline in seconds (requires device timeout)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be positive")
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
@@ -31,7 +34,10 @@ def main():
                        stdout=subprocess.DEVNULL)
         shell(["chmod", "700", remote + "/test"], check=True)
         # Tests may emit relative output files. Keep those in the owned directory.
-        script = "cd " + shlex.quote(remote) + " && " + shlex.join(["./test"] + command[1:])
+        invocation = ["./test"] + command[1:]
+        if args.timeout is not None:
+            invocation = ["timeout", "-k", "5", str(args.timeout)] + invocation
+        script = "cd " + shlex.quote(remote) + " && " + shlex.join(invocation)
         return subprocess.run(adb + ["shell", script]).returncode
     finally:
         shell(["rm", "-rf", remote], check=False)

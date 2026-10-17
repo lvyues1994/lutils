@@ -7,6 +7,9 @@ template <class To, class From, class A> struct WidenNative {
 template <class To, class From, class A> struct NarrowNative {
     static constexpr bool available = false;
 };
+template <class To, class From, class A> struct ConvertNative {
+    static constexpr bool available = false;
+};
 } // namespace lutils::simd::detail
 #if defined(__SSE2__) || defined(_M_X64)
 #include <emmintrin.h>
@@ -118,5 +121,17 @@ LUTILS_NARROW_NEON(std::int8_t, std::int16_t, s8, s16, vqmovn_s16)
 LUTILS_NARROW_NEON(std::int16_t, std::int32_t, s16, s32, vqmovn_s32)
 LUTILS_NARROW_NEON(std::uint8_t, std::uint16_t, u8, u16, vqmovn_u16)
 #undef LUTILS_NARROW_NEON
+template <> struct ConvertNative<float, std::int32_t, abi::neon> {
+    static constexpr bool available = true;
+    static LUTILS_SIMD_INLINE void run(float *out, std::int32_t const *in) noexcept {
+        vst1q_f32(out, vcvtq_f32_s32(vld1q_s32(in)));
+    }
+};
+template <> struct ConvertNative<float, std::uint32_t, abi::neon> {
+    static constexpr bool available = true;
+    static LUTILS_SIMD_INLINE void run(float *out, std::uint32_t const *in) noexcept {
+        vst1q_f32(out, vcvtq_f32_u32(vld1q_u32(in)));
+    }
+};
 } // namespace lutils::simd::detail
 #endif

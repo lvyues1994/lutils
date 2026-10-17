@@ -5,6 +5,10 @@
 
 namespace lutils::simd::detail {
 template <class T> LUTILS_SIMD_INLINE std::uint64_t sseMask(__m128i v) noexcept {
+    if constexpr (sizeof(T) == 4)
+        return static_cast<unsigned>(_mm_movemask_ps(_mm_castsi128_ps(v)));
+    if constexpr (sizeof(T) == 8)
+        return static_cast<unsigned>(_mm_movemask_pd(_mm_castsi128_pd(v)));
     auto bytes = static_cast<unsigned>(_mm_movemask_epi8(v));
     if constexpr (sizeof(T) == 1)
         return bytes;

@@ -1,4 +1,4 @@
-add_library(lutils_image_simd STATIC src/Conversion.cpp src/Scalar.cpp)
+add_library(lutils_image_simd STATIC src/Conversion.cpp src/Scalar.cpp src/Tuning.cpp)
 add_library(lutils::image_simd ALIAS lutils_image_simd)
 target_include_directories(lutils_image_simd PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"

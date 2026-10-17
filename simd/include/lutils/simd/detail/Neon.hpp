@@ -4,6 +4,19 @@
 #include <arm_neon.h>
 
 namespace lutils::simd::detail {
+template <class M, class U, std::size_t N>
+LUTILS_SIMD_INLINE std::uint64_t neonMask(M mask, U const (&values)[N]) noexcept {
+    if constexpr (sizeof(U) == 4) {
+        // Comparison lanes are all-zero/all-one. Each contributes its lane bit.
+        std::uint32_t const weights[]{1, 2, 4, 8};
+        return vaddvq_u32(vandq_u32(mask, vld1q_u32(weights)));
+    } else {
+        std::uint64_t out = 0;
+        for (std::size_t i = 0; i < N; ++i)
+            out |= std::uint64_t(values[i] != 0) << i;
+        return out;
+    }
+}
 #define LUTILS_NEON_BINARY(NAME, INTRINSIC)                                                        \
     static LUTILS_SIMD_INLINE void NAME(T *o, T const *a, T const *b) noexcept {                   \
         write(o, INTRINSIC(read(a), read(b)));                                                     \
@@ -19,10 +32,7 @@ namespace lutils::simd::detail {
         decltype(vceqq_##SUFFIX(read(nullptr), read(nullptr))) m) noexcept {                       \
         std::uint##BITS##_t values[16 / sizeof(T)];                                                \
         vst1q_u##BITS(values, m);                                                                  \
-        std::uint64_t out = 0;                                                                     \
-        for (std::size_t i = 0; i < 16 / sizeof(T); ++i)                                           \
-            out |= std::uint64_t(values[i] != 0) << i;                                             \
-        return out;                                                                                \
+        return neonMask(m, values);                                                               \
     }                                                                                              \
     LUTILS_NEON_BINARY(add, vaddq_##SUFFIX)                                                        \
     LUTILS_NEON_BINARY(sub, vsubq_##SUFFIX)                                                        \

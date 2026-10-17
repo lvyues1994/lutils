@@ -59,7 +59,10 @@ auto bound = im::bindImage(device, image.value());
 调用者管理。多个平面可以共用一个 BLOB，也可以分别使用不同 BLOB。现有五种预设格式与 region plan
 均可使用此布局。GPU 使用原分配，执行器不创建 staging buffer、不上传或回读整帧。
 
-普通 VA 使用 CPU 路径。裸 dma fd 在 Android 上仍无导入接口。
+普通 VA 使用 CPU 路径。Android 也可以通过 `DmaBufMemory::import(fd)` 导入裸 DMA fd，
+再用 `ImageResource::linear` 显式提供格式、平面 offset 和 stride，交给 CPU 执行器。
+调用方必须已知线性布局，buffer 必须支持 CPU 映射和 dma-buf 同步 ioctl。
+`importDmaBufImage` 便利接口仍仅用于 Linux；这里没有增加 Android Vulkan DMA 导入。
 
 ## 原生 RGBA/YUV 图像
 

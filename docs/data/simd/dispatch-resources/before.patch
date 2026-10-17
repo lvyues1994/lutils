@@ -1,0 +1,268 @@
+--- a/simd/include/lutils/simd/Compress.hpp
++++ b/simd/include/lutils/simd/Compress.hpp
+@@ -18,4 +18 @@
+-        if constexpr (std::is_same_v<A, abi::neon>)
+-            out.count = detail::compressIndexes.counts[detail::MaskAccess::bits(selected)];
+-        else
+-            out.count = count(selected);
++        out.count = count(selected);
+@@ -41,17 +38 @@
+-        if constexpr (!std::is_same_v<A, abi::neon>) {
+-            std::memcpy(out, detail::Access::data(packed.values), sizeof(T) * packed.count);
+-            return packed.count;
+-        }
+-        // NEON compression handles four 32-bit lanes. Constant-size copies
+-        // avoid a dynamic memcpy per batch without over-writing the tail.
+-        static_assert(sizeof(T) == 4);
+-        auto const *in = detail::Access::data(packed.values);
+-        auto remaining = packed.count;
+-        if (remaining >= 2) {
+-            std::memcpy(out, in, 2 * sizeof(T));
+-            out += 2;
+-            in += 2;
+-            remaining -= 2;
+-        }
+-        if (remaining)
+-            std::memcpy(out, in, sizeof(T));
++        std::memcpy(out, detail::Access::data(packed.values), sizeof(T) * packed.count);
+--- a/simd/include/lutils/simd/Convert.hpp
++++ b/simd/include/lutils/simd/Convert.hpp
+@@ -133,4 +132,0 @@
+-    if constexpr (detail::ConvertNative<To, From, A>::available) {
+-        detail::ConvertNative<To, From, A>::run(detail::Access::data(out), detail::Access::data(value));
+-        return out;
+-    }
+--- a/simd/include/lutils/simd/detail/Avx2.hpp
++++ b/simd/include/lutils/simd/detail/Avx2.hpp
+@@ -8,4 +7,0 @@
+-    if constexpr (sizeof(T) == 4)
+-        return static_cast<unsigned>(_mm256_movemask_ps(_mm256_castsi256_ps(v)));
+-    if constexpr (sizeof(T) == 8)
+-        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(v)));
+--- a/simd/include/lutils/simd/detail/Compress.hpp
++++ b/simd/include/lutils/simd/detail/Compress.hpp
+@@ -10 +9,0 @@
+-    std::uint8_t counts[256]{};
+@@ -19 +17,0 @@
+-        result.counts[mask] = static_cast<std::uint8_t>(count);
+--- a/simd/include/lutils/simd/detail/Conversions.hpp
++++ b/simd/include/lutils/simd/detail/Conversions.hpp
+@@ -8,3 +7,0 @@
+-    static constexpr bool available = false;
+-};
+-template <class To, class From, class A> struct ConvertNative {
+@@ -124,12 +120,0 @@
+-template <> struct ConvertNative<float, std::int32_t, abi::neon> {
+-    static constexpr bool available = true;
+-    static LUTILS_SIMD_INLINE void run(float *out, std::int32_t const *in) noexcept {
+-        vst1q_f32(out, vcvtq_f32_s32(vld1q_s32(in)));
+-    }
+-};
+-template <> struct ConvertNative<float, std::uint32_t, abi::neon> {
+-    static constexpr bool available = true;
+-    static LUTILS_SIMD_INLINE void run(float *out, std::uint32_t const *in) noexcept {
+-        vst1q_f32(out, vcvtq_f32_u32(vld1q_u32(in)));
+-    }
+-};
+--- a/simd/include/lutils/simd/detail/Neon.hpp
++++ b/simd/include/lutils/simd/detail/Neon.hpp
+@@ -7,13 +6,0 @@
+-template <class M, class U, std::size_t N>
+-LUTILS_SIMD_INLINE std::uint64_t neonMask(M mask, U const (&values)[N]) noexcept {
+-    if constexpr (sizeof(U) == 4) {
+-        // Comparison lanes are all-zero/all-one. Each contributes its lane bit.
+-        std::uint32_t const weights[]{1, 2, 4, 8};
+-        return vaddvq_u32(vandq_u32(mask, vld1q_u32(weights)));
+-    } else {
+-        std::uint64_t out = 0;
+-        for (std::size_t i = 0; i < N; ++i)
+-            out |= std::uint64_t(values[i] != 0) << i;
+-        return out;
+-    }
+-}
+@@ -35 +22,4 @@
+-        return neonMask(m, values);                                                               \
++        std::uint64_t out = 0;                                                                     \
++        for (std::size_t i = 0; i < 16 / sizeof(T); ++i)                                           \
++            out |= std::uint64_t(values[i] != 0) << i;                                             \
++        return out;                                                                                \
+--- a/simd/include/lutils/simd/detail/Sse2.hpp
++++ b/simd/include/lutils/simd/detail/Sse2.hpp
+@@ -8,4 +7,0 @@
+-    if constexpr (sizeof(T) == 4)
+-        return static_cast<unsigned>(_mm_movemask_ps(_mm_castsi128_ps(v)));
+-    if constexpr (sizeof(T) == 8)
+-        return static_cast<unsigned>(_mm_movemask_pd(_mm_castsi128_pd(v)));
+--- a/image/simd/CMakeLists.txt
++++ b/image/simd/CMakeLists.txt
+@@ -1 +1 @@
+-add_library(lutils_image_simd STATIC src/Conversion.cpp src/Scalar.cpp src/Tuning.cpp)
++add_library(lutils_image_simd STATIC src/Conversion.cpp src/Scalar.cpp)
+--- a/image/simd/include/lutils/image/CpuTuning.hpp
++++ /dev/null
+@@ -1,31 +0,0 @@
+-#pragma once
+-#include <chrono>
+-#include <lutils/image/SimdConversion.hpp>
+-#include <vector>
+-
+-namespace lutils::image {
+-struct CpuTuningOptions {
+-    // Checked between conversions; a conversion already in flight must finish.
+-    std::chrono::milliseconds budget{100};
+-};
+-struct CpuTargetTiming {
+-    simd::Target target;
+-    std::vector<double> nanoseconds; // Per conversion; equal complete rounds only.
+-    double medianNanoseconds;
+-};
+-struct CpuTuningResult {
+-    CpuConversionPlan plan;
+-    std::vector<CpuTargetTiming> timings;
+-    std::chrono::nanoseconds elapsed;
+-    bool budgetExhausted;
+-};
+-// Explicit, one-time calibration on caller-owned, exclusively accessible views.
+-// Writes destination repeatedly; input is unchanged. No threads or global cache.
+-// Reuse the returned plan for similar data layouts and execution conditions.
+-// Fewer than three complete rounds keeps Automatic's default; otherwise a
+-// candidate must beat it by at least 5%. Pixel-buffer allocation and mapping
+-// are excluded; view validation (including metadata allocations) is measured.
+-Result<CpuTuningResult> tuneCpuConversion(ConstFrameView const &source,
+-                                          FrameView const &destination,
+-                                          CpuTuningOptions options = {});
+-} // namespace lutils::image
+--- a/image/simd/src/Conversion.cpp
++++ b/image/simd/src/Conversion.cpp
+@@ -59,10 +59 @@
+-    auto table = implementations(rgba);
+-    if (target == simd::Target::Automatic) {
+-        // Both kernels process one byte batch of pixels per iteration. A wider
+-        // implementation cannot enter its vector loop on a shorter row.
+-        if (a.width < 32)
+-            table.avx2 = nullptr;
+-        if (a.width < 16)
+-            table.sse2 = table.neon = nullptr;
+-    }
+-    auto selected = simd::resolve(table, target);
++    auto selected = simd::resolve(implementations(rgba), target);
+--- a/image/simd/src/Tuning.cpp
++++ /dev/null
+@@ -1,89 +0,0 @@
+-#include "Tuning.hpp"
+-#include <algorithm>
+-
+-namespace lutils::image {
+-Result<CpuTuningResult> tuneCpuConversion(ConstFrameView const &source,
+-                                          FrameView const &destination, CpuTuningOptions options) {
+-    using Clock = std::chrono::steady_clock;
+-    if (options.budget.count() <= 0 || options.budget > std::chrono::seconds(10))
+-        return Error{ErrorCode::InvalidArgument, "CPU tuning budget must be in (0, 10s]"};
+-    auto start = Clock::now();
+-    auto deadline = start + options.budget;
+-    auto prepared = CpuConversionPlan::prepare(source.desc, destination.desc);
+-    if (!prepared)
+-        return prepared.error();
+-    auto fallback = prepared.value().target();
+-    // Validate bounds/aliasing before the first write; also warm the default path.
+-    auto valid = prepared.value().run(source, destination);
+-    if (!valid)
+-        return valid.error();
+-    std::vector<CpuConversionPlan> plans{prepared.value()};
+-    for (auto target :
+-         {simd::Target::Scalar, simd::Target::Sse2, simd::Target::Avx2, simd::Target::Neon}) {
+-        auto width = target == simd::Target::Avx2 ? 32u : target == simd::Target::Scalar ? 1u : 16u;
+-        if (target == fallback || source.desc.width < width)
+-            continue;
+-        auto p = CpuConversionPlan::prepare(source.desc, destination.desc, target);
+-        if (p)
+-            plans.push_back(std::move(p).value());
+-    }
+-    std::vector<CpuTargetTiming> timings;
+-    std::vector<std::size_t> iterations;
+-    bool exhausted = false;
+-    for (auto const &plan : plans) {
+-        timings.push_back({plan.target(), {}, 0});
+-        timings.back().nanoseconds.reserve(5);
+-        if (Clock::now() >= deadline) {
+-            exhausted = true;
+-            break;
+-        }
+-        auto before = Clock::now();
+-        auto result = plan.run(source, destination);
+-        if (!result)
+-            return result.error();
+-        auto ns =
+-            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - before).count();
+-        iterations.push_back(static_cast<std::size_t>(std::clamp(
+-            std::int64_t{200000} / std::max(std::int64_t{1}, static_cast<std::int64_t>(ns)),
+-            std::int64_t{1}, std::int64_t{64})));
+-    }
+-    for (std::size_t round = 0; round < 5 && !exhausted; ++round) {
+-        std::vector<double> samples(plans.size());
+-        for (std::size_t i = 0; i < plans.size(); ++i) {
+-            auto index = (i + round) % plans.size(); // Rotate thermal/order bias.
+-            auto before = Clock::now();
+-            for (std::size_t n = 0; n < iterations[index]; ++n) {
+-                if (Clock::now() >= deadline) {
+-                    exhausted = true;
+-                    break;
+-                }
+-                auto result = plans[index].run(source, destination);
+-                if (!result)
+-                    return result.error();
+-            }
+-            if (exhausted)
+-                break;
+-            samples[index] =
+-                std::chrono::duration<double, std::nano>(Clock::now() - before).count() /
+-                static_cast<double>(iterations[index]);
+-        }
+-        if (!exhausted)
+-            for (std::size_t i = 0; i < plans.size(); ++i)
+-                timings[i].nanoseconds.push_back(samples[i]);
+-    }
+-    for (auto &t : timings) {
+-        auto sorted = t.nanoseconds;
+-        std::sort(sorted.begin(), sorted.end());
+-        if (!sorted.empty())
+-            t.medianNanoseconds = (sorted[(sorted.size() - 1) / 2] + sorted[sorted.size() / 2]) / 2;
+-    }
+-    auto selected = simd_detail::chooseTiming(timings, fallback);
+-    for (auto &plan : plans)
+-        if (plan.target() == selected)
+-            return CpuTuningResult{
+-                std::move(plan), std::move(timings),
+-                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start),
+-                exhausted || Clock::now() >= deadline};
+-    return Error{ErrorCode::InvalidArgument, "CPU tuning selected an absent implementation"};
+-}
+-} // namespace lutils::image
+--- a/image/simd/src/Tuning.hpp
++++ /dev/null
+@@ -1,25 +0,0 @@
+-#pragma once
+-#include <cmath>
+-#include <lutils/image/CpuTuning.hpp>
+-
+-namespace lutils::image::simd_detail {
+-inline simd::Target chooseTiming(std::vector<CpuTargetTiming> const &timings,
+-                                 simd::Target fallback) {
+-    double baseline = 0;
+-    for (auto const &t : timings)
+-        if (t.target == fallback && t.nanoseconds.size() >= 3)
+-            baseline = t.medianNanoseconds;
+-    if (!(baseline > 0) || !std::isfinite(baseline))
+-        return fallback;
+-    auto selected = fallback;
+-    double best = baseline;
+-    for (auto const &t : timings)
+-        if (t.nanoseconds.size() >= 3 && t.medianNanoseconds > 0 &&
+-            std::isfinite(t.medianNanoseconds) && t.medianNanoseconds < best &&
+-            t.medianNanoseconds <= baseline * 0.95) {
+-            selected = t.target;
+-            best = t.medianNanoseconds;
+-        }
+-    return selected;
+-}
+-} // namespace lutils::image::simd_detail

@@ -7,6 +7,7 @@ template <class T, class A> struct CompressNative {
 struct CompressIndexes {
     std::uint8_t lanes[256][8]{};
     std::uint8_t bytes[16][16]{};
+    std::uint8_t counts[256]{};
 };
 constexpr CompressIndexes makeCompressIndexes() noexcept {
     CompressIndexes result{};
@@ -15,6 +16,7 @@ constexpr CompressIndexes makeCompressIndexes() noexcept {
         for (unsigned i = 0; i < 8; ++i)
             if ((mask >> i) & 1u)
                 result.lanes[mask][count++] = static_cast<std::uint8_t>(i);
+        result.counts[mask] = static_cast<std::uint8_t>(count);
         while (count < 8)
             result.lanes[mask][count++] = 128;
     }

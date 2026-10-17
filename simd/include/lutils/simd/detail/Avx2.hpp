@@ -5,6 +5,10 @@
 
 namespace lutils::simd::detail {
 template <class T> LUTILS_SIMD_INLINE std::uint64_t avxMask(__m256i v) noexcept {
+    if constexpr (sizeof(T) == 4)
+        return static_cast<unsigned>(_mm256_movemask_ps(_mm256_castsi256_ps(v)));
+    if constexpr (sizeof(T) == 8)
+        return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(v)));
     auto bytes = static_cast<unsigned>(_mm256_movemask_epi8(v));
     if constexpr (sizeof(T) == 1)
         return bytes;

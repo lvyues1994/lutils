@@ -71,6 +71,8 @@ NaN 转零，无穷及越界值钳位。`convert<To>` 为整数到浮点；两�
 NEON 提供原生交织和解交织。缺失指令使用统一标量回退，例如 SSE2 的 64 位比较、
 8/64 位整数乘法。相邻整数位宽的扩宽、常用饱和缩窄、16/32 位算术右移，以及
 x86 的 16 位交织已有原生路径。AVX2/NEON 的 32 位元素压缩用查表和原生重排，保持稳定顺序及尾部清零。
+NEON 的 i32/u32 → float 使用原生转换。x86 的 32/64 位比较直接提取每个 lane 的符号位；
+NEON 的 32 位比较采用位权归约。NEON 压缩写入使用定长拷贝，仍只写实际选中的元素。
 其他转换、归约和通用 shuffle 保留通用实现；具体是否生成向量指令取决于编译器。
 
 ## 算法与调度
@@ -128,6 +130,26 @@ if (!plan) return plan.error();
 auto result = plan.value().run(sourceView, destinationView);
 ```
 
+图像层的 Automatic 根据行宽排除无法进入完整向量块的后端：小于 16 像素用 Scalar，
+小于 32 像素不选 AVX2；显式 Target 不受此规则限制。通用 `simd::resolve` 保持 ISA 优先级策略。
+
+若要按当前机器、图像尺寸和真实 stride 实测选优，可显式调优一次并复用返回的计划：
+
+```cpp
+#include <lutils/image/CpuTuning.hpp>
+auto tuned = image::tuneCpuConversion(sourceView, destinationView);
+if (!tuned) return tuned.error();
+auto result = tuned.value().plan.run(sourceView, destinationView);
+```
+
+调优会反复写入目标，调用方须独占源与目标，源内容保持不变。候选依次预热，然后轮换测量顺序，
+最多完成五轮；只比较各候选都完成的轮次。至少三轮且中位耗时比默认后端低 5% 才切换，
+否则保留默认后端。`timings`、`elapsed` 和 `budgetExhausted` 返回测量依据与成本。
+默认预算为 100 ms，可用 `CpuTuningOptions` 设置为 (0, 10s]；预算在转换之间检查，
+已开始的转换会完成。计时包含视图校验及其元数据分配，不含像素 buffer 分配或映射。
+调优没有全局缓存或后台线程，也不会在普通 `prepare/run` 中自动触发。
+数据布局、CPU 调度或负载变化后，调用方可重新调优。
+
 对于 `ImageResource`，包含 `<lutils/image/CpuConversionExecutor.hpp>`，链接 `lutils::image_memory`：
 
 ```cpp
@@ -154,13 +176,32 @@ uv run --no-project tools/simd/report.py build/release/simd.jsonl --output build
 
 基准覆盖扩宽、饱和缩窄、整数转浮点、归约、0/50/100% 命中率的稳定过滤，以及两种图像转换。
 长度包含 4096、4099、262144；图像包含 640×480、1920×1536 和带 padding 的 642×481。
-每项预热后记录九组原始样本（迭代次数、总纳秒数、执行前后 CPU 编号），报告中位数、MAD、最小和最大值。
+每项至少预热 50 ms，再记录九组原始样本（迭代次数、总纳秒数、执行前后 CPU 编号），报告中位数、MAD、最小和最大值。
+计时前用不同于参考值的数据覆盖输出并独立校验，避免上一后端的结果掩盖漏写；计时后直接校验最后一次执行的结果。
+smoke 仅预热一次。
 图像分别计时 prepared_run 和 prepare_and_run；分配、参考计算、校验不在计时内。
-每次校验前覆盖输出，避免上一后端的结果掩盖漏写。Scalar 允许编译器自动向量化。
+Scalar 允许编译器自动向量化。
 
 基准固定随机种子，单线程，45 秒总预算。`--smoke` 只验证结果和运行流程，不设跨机器性能阈值。
 `tools/simd/report.py` 验证完整性和统计量，导出逐样本和汇总 CSV。
 实测环境、优化收益与原始数据见 [SIMD 性能报告](simd-performance.md)。
+
+`simd_resource_benchmark` 测量 VA、Linux/Android DMA、AHB BLOB 和原生 RGBA AHB 输出：
+
+```sh
+./build/release/benchmarks/simd/simd_resource_benchmark --memory va
+# 仅分配本进程自己的 DMA buffer；需要可访问的 heap。
+timeout 50s ./build/release/benchmarks/simd/simd_resource_benchmark --memory dma --heap /dev/dma_heap/system
+uv run --no-project tools/android/run.py --serial "$ANDROID_SERIAL" --timeout 50 -- \
+    build/android-arm64/benchmarks/simd/simd_resource_benchmark --memory ahb
+```
+
+`--memory ahb-rgba` 测量 NV12 BLOB → 原生 RGBA AHB；原生 YUV 输入没有被当作 NV12。
+每种存储覆盖平面共用和分离分配。`executor_run` 包含映射、计算、结束 CPU 访问和映射析构；
+`mapped_run` 在同一映射内重复计算；`map_finish` 仅测无像素访问的映射/同步/析构。
+空映射对照不包含转换引起的脏缓存刷新，三个指标不能按简单相减拆分。
+分配、导入、调优、填充和逐像素验证位于计时外；调优耗时另记 `calibration_ns`。
+这些私有 CPU buffer 没有在途生产者，不测摄像头、解码器或 GPU fence 的等待。
 
 测试覆盖数值边界、四种舍入模式、NaN、所有尾长、guard page、AVX2 跨半区顺序、混合 ISA 链接、
 图像布局与映射同步错误。Android 使用 [设备测试流程](android.md) 运行 `^simd\.`；

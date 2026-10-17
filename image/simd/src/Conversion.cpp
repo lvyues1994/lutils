@@ -56,7 +56,16 @@ Result<CpuConversionPlan> CpuConversionPlan::prepare(FrameDesc a, FrameDesc b,
                          "horizontal/midpoint vertical siting and full-range RGB output"};
     } else
         return Error{ErrorCode::Unsupported, "no CPU SIMD conversion for these formats"};
-    auto selected = simd::resolve(implementations(rgba), target);
+    auto table = implementations(rgba);
+    if (target == simd::Target::Automatic) {
+        // Both kernels process one byte batch of pixels per iteration. A wider
+        // implementation cannot enter its vector loop on a shorter row.
+        if (a.width < 32)
+            table.avx2 = nullptr;
+        if (a.width < 16)
+            table.sse2 = table.neon = nullptr;
+    }
+    auto selected = simd::resolve(table, target);
     if (!selected)
         return Error{ErrorCode::Unsupported, "SIMD target is unavailable"};
     return CpuConversionPlan{std::move(a), std::move(b), selected->function, selected->target};
