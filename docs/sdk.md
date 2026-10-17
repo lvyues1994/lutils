@@ -65,7 +65,8 @@ target_link_libraries(app PRIVATE lutils::erasure lutils::image lutils::compute_
 ```
 
 配置时传 `-DCMAKE_PREFIX_PATH=/path/to/sdk`。
-无组件请求时只加载基础目标：core、erasure、image、image_memory、compute_kernel、compute、compute_cpu。
+无组件请求时加载基础目标：core、erasure、simd、simd_dispatch、image、image_memory、image_simd、compute_kernel、compute、compute_cpu。
+SIMD 基础操作、调度及 CPU 图像转换的接入见 [SIMD 模块](simd.md)。
 `lutils::image` 提供 CPU 裁剪/填充；`lutils::image_memory` 提供 VA/dma-buf 资源与 CPU 执行器。
 可选组件如下：
 

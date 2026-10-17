@@ -1,8 +1,11 @@
 #include <lutils/Expected.hpp>
 #include <lutils/compute/Runtime.hpp>
 #include <lutils/erasure.hpp>
+#include <lutils/image/CpuConversionExecutor.hpp>
 #include <lutils/image/Frame.hpp>
 #include <lutils/image/ImageResource.hpp>
+#include <lutils/image/SimdConversion.hpp>
+#include <lutils/simd.hpp>
 #include <stdexcept>
 #ifdef __ANDROID__
 #include <lutils/image/AndroidImage.hpp>
@@ -64,7 +67,6 @@ int main() {
     auto regions = im::createCpuRegionExecutor();
     take(regions->run(cropPlan, take(im::ImageResource::borrow(input.view())),
                       take(im::ImageResource::borrow(regionOutput.view()))));
-#ifdef WITH_OPS
     auto outDesc = desc;
     outDesc.format = im::nv12();
     outDesc.color.vertical = im::ChromaLocation::Midpoint;
@@ -73,6 +75,28 @@ int main() {
     for (unsigned y = 0; y < 2; ++y)
         for (unsigned x = 0; x < 4; ++x)
             im::row(input.view().planes[0], y)[x] = std::byte{raw[y * 4 + x]};
+    using V = lutils::simd::Batch<std::int32_t, lutils::simd::abi::scalar>;
+    check(lutils::simd::all(V{20} + V{22} == V{42}));
+    take(im::convertUyvyToNv12(im::readOnly(input.view()), output.view()));
+    check(im::row(output.view().planes[0], 0)[0] == std::byte{20});
+    check(im::row(output.view().planes[0], 1)[1] == std::byte{42});
+    check(im::row(output.view().planes[1], 0)[0] == std::byte{11});
+    check(im::row(output.view().planes[1], 0)[1] == std::byte{31});
+    auto cpuPlan = take(im::CpuConversionPlan::prepare(desc, outDesc));
+    auto cpu = im::createCpuConversionExecutor();
+    take(cpu->run(cpuPlan, take(im::ImageResource::borrow(im::readOnly(input.view()))),
+                  take(im::ImageResource::borrow(output.view()))));
+    check(im::row(output.view().planes[1], 0)[1] == std::byte{31});
+    auto rgbDesc = outDesc;
+    rgbDesc.format = im::rgba8();
+    rgbDesc.color.matrix = im::Matrix::Identity;
+    rgbDesc.color.range = im::Range::Full;
+    rgbDesc.color.horizontal = im::ChromaLocation::Unknown;
+    rgbDesc.color.vertical = im::ChromaLocation::Unknown;
+    auto rgb = take(im::HostFrame::create(rgbDesc));
+    take(im::convertNv12ToRgba(im::readOnly(output.view()), rgb.view()));
+    check(im::row(rgb.view().planes[0], 0)[3] == std::byte{255});
+#ifdef WITH_OPS
     auto plan = take(im::ConversionPlan::prepare(*device, desc, outDesc));
     take(plan.run(*device, im::readOnly(input.view()), output.view()));
     check(im::row(output.view().planes[0], 0)[0] == std::byte{20});

@@ -7,6 +7,7 @@ if(ANDROID)
     list(APPEND lutils_test_target_flags "--target=${CMAKE_CXX_COMPILER_TARGET}"
         "--sysroot=${CMAKE_SYSROOT}" -stdlib=libc++)
 endif()
+add_subdirectory(simd)
 foreach(case IN ITEMS traits behavior exceptions)
     add_executable(expected_${case}_tests expected/${case}.cpp)
     target_link_libraries(expected_${case}_tests PRIVATE lutils::core lutils_development)

@@ -1,0 +1,325 @@
+#include "Micro.hpp"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <lutils/image/SimdConversion.hpp>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#if defined(__linux__)
+#include <sched.h>
+#endif
+namespace s = lutils::simd;
+namespace im = lutils::image;
+using Clock = std::chrono::steady_clock;
+namespace {
+void check(bool ok) {
+    if (!ok)
+        throw std::runtime_error("benchmark validation failed");
+}
+template <class T> T take(lutils::Result<T> r) {
+    if (!r)
+        throw std::runtime_error(r.error().message);
+    return std::move(r).value();
+}
+void take(lutils::Result<void> r) {
+    if (!r)
+        throw std::runtime_error(r.error().message);
+}
+int cpu() {
+#if defined(__linux__)
+    return sched_getcpu();
+#else
+    return -1;
+#endif
+}
+struct Backend {
+    s::Target target;
+    char const *name;
+    micro::Function *function;
+};
+std::vector<Backend> backends() {
+    std::vector<Backend> out{{s::Target::Scalar, "scalar", micro::scalar}};
+#if defined(LUTILS_SIMD_X86)
+    if (s::supported(s::Target::Sse2))
+        out.push_back({s::Target::Sse2, "sse2", micro::sse2});
+    if (s::supported(s::Target::Avx2))
+        out.push_back({s::Target::Avx2, "avx2", micro::avx2});
+#elif defined(LUTILS_SIMD_ARM64)
+    out.push_back({s::Target::Neon, "neon", micro::neon});
+#endif
+    return out;
+}
+struct Sample {
+    std::size_t iterations;
+    std::int64_t ns;
+    int before;
+    int after;
+};
+volatile std::uint64_t consumed = 0;
+template <class Run, class Validate>
+void measure(std::string const &fields, Run run, Validate validate, bool smoke,
+             Clock::time_point deadline) {
+    validate();
+    consumed = run(); // Explicit warmup, correctness outside timed regions.
+    auto timed = [&](std::size_t n) {
+        int before = cpu();
+        auto start = Clock::now();
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            value ^= run();
+        auto end = Clock::now();
+        consumed = value;
+        return Sample{n, std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count(),
+                      before, cpu()};
+    };
+    std::size_t iterations = 1;
+    if (!smoke) {
+        auto probe = timed(1);
+        iterations = std::min(
+            std::size_t{100000},
+            std::max(std::size_t{1},
+                     static_cast<std::size_t>(2000000 / std::max(std::int64_t{1}, probe.ns))));
+    }
+    std::vector<Sample> samples;
+    for (int i = 0; i < (smoke ? 1 : 9); ++i) {
+        if (Clock::now() > deadline)
+            throw std::runtime_error("benchmark exceeded 45 second budget");
+        samples.push_back(timed(iterations));
+    }
+    validate();
+    std::vector<double> times;
+    for (auto const &sample : samples)
+        times.push_back(double(sample.ns) / double(sample.iterations));
+    std::sort(times.begin(), times.end());
+    double median = times[times.size() / 2];
+    std::vector<double> deviations;
+    for (auto t : times)
+        deviations.push_back(std::abs(t - median));
+    std::sort(deviations.begin(), deviations.end());
+    std::cout << "{\"type\":\"case\"," << fields
+              << ",\"validated\":true,\"warmups\":1,\"median_ns\":" << median
+              << ",\"min_ns\":" << times.front() << ",\"max_ns\":" << times.back()
+              << ",\"mad_ns\":" << deviations[deviations.size() / 2] << ",\"samples\":[";
+    bool first = true;
+    for (auto const &sample : samples) {
+        if (!first)
+            std::cout << ',';
+        first = false;
+        std::cout << "{\"iterations\":" << sample.iterations << ",\"elapsed_ns\":" << sample.ns
+                  << ",\"cpu_before\":" << sample.before << ",\"cpu_after\":" << sample.after
+                  << '}';
+    }
+    std::cout << "]}\n";
+}
+void primitives(bool smoke, Clock::time_point deadline) {
+    auto sizes =
+        smoke ? std::vector<std::size_t>{67} : std::vector<std::size_t>{4096, 4099, 262144};
+    auto targets = backends();
+    for (auto n : sizes) {
+        // One element offset exercises unaligned vector accesses without violating T alignment.
+        std::vector<std::uint8_t> bytes(n + 1), narrow(n + 1);
+        std::vector<std::uint16_t> words(n + 1), wide(n + 1);
+        std::vector<std::int32_t> integers(n + 1), filtered(n + 1), reference;
+        std::vector<float> floats(n + 1);
+        micro::Data data{bytes.data() + 1,  words.data() + 1,  integers.data() + 1, wide.data() + 1,
+                         narrow.data() + 1, floats.data() + 1, filtered.data() + 1, n};
+        for (std::size_t i = 1; i <= n; ++i) {
+            bytes[i] = static_cast<std::uint8_t>(i * 97);
+            words[i] = static_cast<std::uint16_t>(i * 937);
+        }
+        int ordinal = 0;
+        for (auto op :
+             {micro::Operation::Widen, micro::Operation::Narrow, micro::Operation::Convert,
+              micro::Operation::Filter, micro::Operation::Sum}) {
+            auto densities = op == micro::Operation::Filter ? std::vector<int>{0, 50, 100}
+                                                            : std::vector<int>{50};
+            for (auto density : densities) {
+                std::uint32_t state = 93721, sum = 0;
+                reference.clear();
+                for (std::size_t i = 1; i <= n; ++i) {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    integers[i] = (state % 100 < static_cast<unsigned>(density) ? 1 : -1) *
+                                  static_cast<int>(1 + (state % 10000));
+                    sum += static_cast<std::uint32_t>(integers[i]);
+                    if (integers[i] > 0)
+                        reference.push_back(integers[i]);
+                }
+                char const *names[]{"widen_u8_u16", "narrow_sat_u16_u8", "convert_i32_f32",
+                                    "copy_if_i32", "sum_u32"};
+                for (std::size_t t = 0; t < targets.size(); ++t) {
+                    auto const &backend =
+                        targets[(t + static_cast<std::size_t>(ordinal)) % targets.size()];
+                    auto run = [&]() { return backend.function(op, data); };
+                    auto validate = [&]() {
+                        for (std::size_t i = 0; i < n; ++i) {
+                            data.wide[i] = static_cast<std::uint16_t>(data.bytes[i] + 1u);
+                            data.narrow[i] = static_cast<std::uint8_t>(
+                                std::min(data.words[i], std::uint16_t{255}) ^ 1);
+                            data.floats[i] = std::numeric_limits<float>::quiet_NaN();
+                            data.filtered[i] = INT32_MIN;
+                        }
+                        auto result = run();
+                        if (op == micro::Operation::Sum)
+                            check(result == sum);
+                        else if (op == micro::Operation::Filter) {
+                            check(result == reference.size());
+                            check(std::equal(reference.begin(), reference.end(), data.filtered));
+                        } else
+                            for (std::size_t i = 0; i < n; ++i) {
+                                if (op == micro::Operation::Widen)
+                                    check(data.wide[i] == data.bytes[i]);
+                                if (op == micro::Operation::Narrow)
+                                    check(data.narrow[i] ==
+                                          std::min(data.words[i], std::uint16_t{255}));
+                                if (op == micro::Operation::Convert)
+                                    check(data.floats[i] == static_cast<float>(data.integers[i]));
+                            }
+                    };
+                    std::string fields =
+                        "\"operation\":\"" + std::string(names[static_cast<int>(op)]) +
+                        "\",\"target\":\"" + backend.name +
+                        "\",\"scope\":\"kernel\",\"elements\":" + std::to_string(n) +
+                        ",\"element_offset\":1,\"positive_percent\":" + std::to_string(density);
+                    measure(fields, run, validate, smoke, deadline);
+                }
+                ++ordinal;
+            }
+        }
+    }
+}
+void imageReference(im::ConstFrameView const &src, im::FrameView const &dst, bool rgba) {
+    auto integer = [](std::byte b) { return std::to_integer<int>(b); };
+    auto q = [](int value) { return std::byte(std::clamp((value + 128) / 256, 0, 255)); };
+    for (std::size_t y = 0; y < src.desc.height; ++y) {
+        auto const *a = im::row(src.planes[0], y);
+        auto *out = im::row(dst.planes[0], y);
+        if (rgba) {
+            auto const *uv = im::row(src.planes[1], y / 2);
+            for (std::size_t x = 0; x < src.desc.width; ++x) {
+                int c = integer(a[x]) - 16, d = integer(uv[2 * (x / 2)]) - 128,
+                    e = integer(uv[2 * (x / 2) + 1]) - 128;
+                out[4 * x] = q(298 * c + 409 * e);
+                out[4 * x + 1] = q(298 * c - 100 * d - 208 * e);
+                out[4 * x + 2] = q(298 * c + 516 * d);
+                out[4 * x + 3] = std::byte{255};
+            }
+        } else {
+            for (std::size_t x = 0; x < src.desc.width; ++x)
+                out[x] = a[2 * x + 1];
+            if (y % 2 == 0) {
+                auto const *bottom =
+                    im::row(src.planes[0], std::min(y + 1, std::size_t(src.desc.height) - 1));
+                auto *uv = im::row(dst.planes[1], y / 2);
+                for (std::size_t x = 0; x < src.desc.width; ++x)
+                    uv[x] = std::byte((integer(a[2 * x]) + integer(bottom[2 * x]) + 1) / 2);
+            }
+        }
+    }
+}
+void images(bool smoke, Clock::time_point deadline) {
+    struct Shape {
+        std::uint32_t width, height;
+        std::size_t alignment;
+    };
+    auto shapes = smoke ? std::vector<Shape>{{66, 5, 64}}
+                        : std::vector<Shape>{{640, 480, 1}, {1920, 1536, 1}, {642, 481, 64}};
+    for (auto shape : shapes)
+        for (bool rgba : {false, true}) {
+            im::FrameDesc desc{shape.width,
+                               shape.height,
+                               rgba ? im::nv12() : im::uyvy422(),
+                               {im::Matrix::Bt601, im::Range::Limited, im::ChromaLocation::Cosited,
+                                rgba ? im::ChromaLocation::Midpoint : im::ChromaLocation::Cosited}};
+            auto outDesc = desc;
+            outDesc.format = rgba ? im::rgba8() : im::nv12();
+            if (rgba)
+                outDesc.color = {im::Matrix::Identity, im::Range::Full};
+            else
+                outDesc.color.vertical = im::ChromaLocation::Midpoint;
+            auto input = take(im::HostFrame::create(desc, shape.alignment));
+            auto output = take(im::HostFrame::create(outDesc, shape.alignment));
+            auto reference = take(im::HostFrame::create(outDesc, shape.alignment));
+            auto inputView = input.view();
+            auto src = im::readOnly(inputView);
+            auto dst = output.view();
+            auto srcGeometry = take(im::geometry(desc)), dstGeometry = take(im::geometry(outDesc));
+            std::uint32_t state = 93721;
+            for (std::size_t p = 0; p < srcGeometry.size(); ++p)
+                for (std::size_t y = 0; y < srcGeometry[p].rows; ++y)
+                    for (std::size_t x = 0; x < srcGeometry[p].rowBytes; ++x) {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        im::row(inputView.planes[p], y)[x] = std::byte(state & 255);
+                    }
+            auto ref = reference.view();
+            imageReference(src, ref, rgba);
+            auto validate = [&]() {
+                for (std::size_t p = 0; p < dstGeometry.size(); ++p)
+                    for (std::size_t y = 0; y < dstGeometry[p].rows; ++y)
+                        check(std::equal(im::row(ref.planes[p], y),
+                                         im::row(ref.planes[p], y) + dstGeometry[p].rowBytes,
+                                         im::row(dst.planes[p], y)));
+            };
+            for (auto const &backend : backends()) {
+                auto plan = take(im::CpuConversionPlan::prepare(desc, outDesc, backend.target));
+                for (bool prepare : {false, true}) {
+                    auto run = [&]() {
+                        if (prepare) {
+                            auto p =
+                                take(im::CpuConversionPlan::prepare(desc, outDesc, backend.target));
+                            take(p.run(src, dst));
+                        } else
+                            take(plan.run(src, dst));
+                        return std::uint64_t(
+                            std::to_integer<unsigned>(im::row(dst.planes[0], 0)[0]));
+                    };
+                    auto validateRun = [&]() {
+                        for (std::size_t p = 0; p < dstGeometry.size(); ++p)
+                            for (std::size_t y = 0; y < dstGeometry[p].rows; ++y)
+                                for (std::size_t x = 0; x < dstGeometry[p].rowBytes; ++x)
+                                    im::row(dst.planes[p], y)[x] =
+                                        im::row(ref.planes[p], y)[x] ^ std::byte{1};
+                        consumed = run();
+                        validate();
+                    };
+                    std::string fields =
+                        "\"operation\":\"" + std::string(rgba ? "nv12_rgba" : "uyvy_nv12") +
+                        "\",\"target\":\"" + backend.name + "\",\"scope\":\"" +
+                        (prepare ? "prepare_and_run" : "prepared_run") +
+                        "\",\"width\":" + std::to_string(shape.width) +
+                        ",\"height\":" + std::to_string(shape.height) +
+                        ",\"row_alignment\":" + std::to_string(shape.alignment) + ",\"elements\":" +
+                        std::to_string(std::uint64_t(shape.width) * shape.height);
+                    measure(fields, run, validateRun, smoke, deadline);
+                }
+            }
+        }
+}
+} // namespace
+int main(int argc, char **argv) {
+    try {
+        bool smoke = argc == 2 && std::string(argv[1]) == "--smoke";
+        if (argc > 1 && !smoke)
+            throw std::runtime_error("usage: simd_benchmark [--smoke]");
+        std::cout << std::setprecision(12)
+                  << "{\"type\":\"environment\",\"schema\":1,\"compiler\":\"" << __VERSION__
+                  << "\",\"build\":\"" << LUTILS_BENCH_BUILD
+                  << "\",\"seed\":93721,\"threads\":1,\"clock\":\"steady_clock\",\"smoke\":"
+                  << (smoke ? "true" : "false") << "}\n";
+        auto deadline = Clock::now() + std::chrono::seconds(45);
+        primitives(smoke, deadline);
+        images(smoke, deadline);
+        std::cout << "{\"type\":\"complete\"}\n";
+        return 0;
+    } catch (std::exception const &error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

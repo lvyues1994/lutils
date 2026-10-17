@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <lutils/image/CpuConversionExecutor.hpp>
 #include <lutils/image/ImageResource.hpp>
 
 namespace lutils::image {
@@ -129,6 +130,48 @@ Result<void> runMapped(RegionPlan const &plan, MappedImage const &input,
 struct Completed final : compute::Completion {
     Result<void> wait() override { return {}; }
     Result<bool> ready() override { return true; }
+};
+Result<void> runMapped(CpuConversionPlan const &plan, MappedImage const &input,
+                       MappedImage &output) {
+    if (input.native)
+        return Error{ErrorCode::Unsupported, "CPU conversion requires linear UYVY or NV12 input"};
+    if (output.native) {
+        if (output.view.desc.format != rgba8() || output.samples.size() != 1 ||
+            output.samples[0].pixelStride != 4 || output.samples[0].rowStride > PTRDIFF_MAX)
+            return Error{ErrorCode::Unsupported,
+                         "CPU conversion requires packed native RGBA output"};
+        auto const &p = output.samples[0];
+        output.view.planes.push_back(
+            {output.writes[0], p.capacity, 0, static_cast<std::ptrdiff_t>(p.rowStride)});
+    }
+    return plan.run(input.read, output.view);
+}
+struct CpuConversions final : CpuConversionExecutor {
+    Result<std::shared_ptr<compute::Completion>> submit(CpuConversionPlan const &plan,
+                                                        ImageResource const &source,
+                                                        ImageResource const &destination) override {
+        if (!(source.description() == plan.source()) ||
+            !(destination.description() == plan.destination()) || source.aliases(destination))
+            return Error{ErrorCode::InvalidArgument, "conversion resources mismatch or alias"};
+        auto input = mapImage(source, Access::Read);
+        if (!input)
+            return input.error();
+        auto output = mapImage(destination, Access::Write);
+        if (!output) {
+            (void)input.value().finish();
+            return output.error();
+        }
+        auto result = runMapped(plan, input.value(), output.value());
+        auto out = output.value().finish();
+        auto in = input.value().finish();
+        if (!result)
+            return result.error();
+        if (!out)
+            return out.error();
+        if (!in)
+            return in.error();
+        return std::shared_ptr<compute::Completion>{std::make_shared<Completed>()};
+    }
 };
 struct CpuRegions final : RegionExecutor {
     Result<std::shared_ptr<compute::Completion>> submit(RegionPlan const &plan,
@@ -279,6 +322,14 @@ Result<void> RegionExecutor::run(RegionPlan const &plan, ImageResource const &so
     return result ? result.value()->wait() : Result<void>{result.error()};
 }
 std::unique_ptr<RegionExecutor> createCpuRegionExecutor() { return std::make_unique<CpuRegions>(); }
+Result<void> CpuConversionExecutor::run(CpuConversionPlan const &plan, ImageResource const &source,
+                                        ImageResource const &destination) {
+    auto result = submit(plan, source, destination);
+    return result ? result.value()->wait() : Result<void>{result.error()};
+}
+std::unique_ptr<CpuConversionExecutor> createCpuConversionExecutor() {
+    return std::make_unique<CpuConversions>();
+}
 Result<ImageResource> bindImage(compute::Device &device, ImageResource const &image) {
     if (image.native_) {
         if (image.nativeBinding_)

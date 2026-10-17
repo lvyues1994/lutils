@@ -1,0 +1,116 @@
+{
+  "measurement_date": "2026-10-17",
+  "base_commit": "f1e384c98454f5f51878d87a2fa495f5c621033f",
+  "working_tree_dirty": true,
+  "optimized_source_sha256": "2bebae3836b12e23b353756be11f9471b96d65d8457448407393ee2701f2aedf",
+  "generic_source_sha256": "ba7fd7d637949c672fe45b3b97664fca36a3350f6e8298425abb8e837154f1ec",
+  "source_hash_scope": [
+    "simd",
+    "image/simd",
+    "benchmarks/simd"
+  ],
+  "baseline_patch_sha256": "4b1d1b9cd45f79f231fa46783cf90718e78e72719739620789616ba914ac7100",
+  "pc": {
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13700KF",
+    "os": "Linux",
+    "kernel": "7.0.0-38-generic",
+    "architecture": "x86_64",
+    "affinity": [
+      2
+    ],
+    "governor": "powersave",
+    "run_order": [
+      "generic-1",
+      "optimized-1",
+      "optimized-2",
+      "generic-2"
+    ]
+  },
+  "android": {
+    "manufacturer": "Xiaomi",
+    "model": "25091RP04C",
+    "soc": "SM8750P",
+    "os": "Android 16",
+    "api": 36,
+    "ndk": "28.2.13676358",
+    "target_api": 29,
+    "kernel": "6.6.118-android15-8-gc44b714366cc-abogki519650608-4k",
+    "governor": "walt",
+    "affinity": "unmodified, recorded per sample",
+    "run_order": [
+      "optimized-1",
+      "generic-1",
+      "generic-2",
+      "optimized-2"
+    ]
+  },
+  "policy": {
+    "threads": 1,
+    "governor_changed": false,
+    "sample_target_ns": 2000000,
+    "samples_per_case": 9,
+    "repeats_per_variant": 2,
+    "budget_seconds_per_process": 45,
+    "timed_scope": "CPU-accessible synthetic buffers; prepared plan or prepare+run; excludes allocation, mapping, transfer and validation"
+  },
+  "binaries": {
+    "pc-optimized": {
+      "sha256": "06012427e50169229cd0a9b55c03298e3973fd9cbaa532ede9054eb253b6810b",
+      "commands": {
+        "Conversion.cpp": "/usr/bin/g++ -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Conversion.cpp.o -c <repo>/image/simd/src/Conversion.cpp",
+        "Scalar.cpp": "/usr/bin/g++ -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Scalar.cpp.o -c <repo>/image/simd/src/Scalar.cpp",
+        "Sse2.cpp": "/usr/bin/g++ -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -msse2 -mno-avx -mno-fma -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Sse2.cpp.o -c <repo>/image/simd/src/Sse2.cpp",
+        "Avx2.cpp": "/usr/bin/g++ -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -mavx2 -mno-fma -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Avx2.cpp.o -c <repo>/image/simd/src/Avx2.cpp",
+        "benchmark/main.cpp": "/usr/bin/g++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/main.cpp.o -c <repo>/benchmarks/simd/main.cpp",
+        "benchmark/Scalar.cpp": "/usr/bin/g++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Scalar.cpp.o -c <repo>/benchmarks/simd/Scalar.cpp",
+        "benchmark/Sse2.cpp": "/usr/bin/g++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -msse2 -mno-avx -mno-fma -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Sse2.cpp.o -c <repo>/benchmarks/simd/Sse2.cpp",
+        "benchmark/Avx2.cpp": "/usr/bin/g++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -mavx2 -mno-fma -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Avx2.cpp.o -c <repo>/benchmarks/simd/Avx2.cpp"
+      }
+    },
+    "pc-generic": {
+      "sha256": "73b1b79db93b446916e219fc5160479e0a64f5066b6b708e3be750fa230e6490",
+      "commands": {
+        "Conversion.cpp": "/usr/bin/c++ -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Conversion.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Conversion.cpp",
+        "Scalar.cpp": "/usr/bin/c++ -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Scalar.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Scalar.cpp",
+        "Sse2.cpp": "/usr/bin/c++ -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -msse2 -mno-avx -mno-fma -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Sse2.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Sse2.cpp",
+        "Avx2.cpp": "/usr/bin/c++ -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -mavx2 -mno-fma -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Avx2.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Avx2.cpp",
+        "benchmark/main.cpp": "/usr/bin/c++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/main.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/main.cpp",
+        "benchmark/Scalar.cpp": "/usr/bin/c++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Scalar.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/Scalar.cpp",
+        "benchmark/Sse2.cpp": "/usr/bin/c++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -msse2 -mno-avx -mno-fma -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Sse2.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/Sse2.cpp",
+        "benchmark/Avx2.cpp": "/usr/bin/c++ -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_X86 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -O3 -DNDEBUG -std=c++17 -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -mavx2 -mno-fma -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Avx2.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/Avx2.cpp"
+      }
+    },
+    "android-optimized": {
+      "sha256": "f8927526aa5a19aa921f18559ba06fc83a959fe701359e6addb020f0268d8ef9",
+      "commands": {
+        "Conversion.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Conversion.cpp.o -c <repo>/image/simd/src/Conversion.cpp",
+        "Scalar.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Scalar.cpp.o -c <repo>/image/simd/src/Scalar.cpp",
+        "Neon.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Neon.cpp.o -c <repo>/image/simd/src/Neon.cpp",
+        "benchmark/main.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/main.cpp.o -c <repo>/benchmarks/simd/main.cpp",
+        "benchmark/Scalar.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Scalar.cpp.o -c <repo>/benchmarks/simd/Scalar.cpp",
+        "benchmark/Neon.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/image/simd/include -I<repo>/image/include -I<repo>/core/include -I<repo>/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Neon.cpp.o -c <repo>/benchmarks/simd/Neon.cpp"
+      }
+    },
+    "android-generic": {
+      "sha256": "8efbbc0de4f242e2d0a2dd7618646b87550645309ea11b19c704bec593325570",
+      "commands": {
+        "Conversion.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Conversion.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Conversion.cpp",
+        "Scalar.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Scalar.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Scalar.cpp",
+        "Neon.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIC -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o image/simd/CMakeFiles/lutils_image_simd.dir/src/Neon.cpp.o -c <repo>/build/simd-work/baseline-source/image/simd/src/Neon.cpp",
+        "benchmark/main.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/main.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/main.cpp",
+        "benchmark/Scalar.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Scalar.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/Scalar.cpp",
+        "benchmark/Neon.cpp": "<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android29 --sysroot=<ndk-r28>/toolchains/llvm/prebuilt/linux-x86_64/sysroot -DLUTILS_BENCH_BUILD=\\\"Release\\\" -DLUTILS_SIMD_ARM64 -I<repo>/build/simd-work/baseline-source/image/simd/include -I<repo>/build/simd-work/baseline-source/image/include -I<repo>/build/simd-work/baseline-source/core/include -I<repo>/build/simd-work/baseline-source/simd/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -O3 -DNDEBUG  -std=c++17 -fPIE -ffp-contract=off -Wall -Wextra -Wpedantic -Werror -Wconversion -Wsign-conversion -Wold-style-cast -Wnon-virtual-dtor -o benchmarks/simd/CMakeFiles/simd_benchmark.dir/Neon.cpp.o -c <repo>/build/simd-work/baseline-source/benchmarks/simd/Neon.cpp"
+      }
+    }
+  },
+  "runs": {
+    "android-generic-1.jsonl": "96f414d05c06e192ac43b536c089e5fa873263e3bbeef5f5e5de72c353144c71",
+    "android-generic-2.jsonl": "dc891fc9ff6348e0d0ff0ee89f45f299b4325f918156db4b1c55cc704037c55f",
+    "android-optimized-1.jsonl": "d26d1e5893e18142f621dcf147b91dc7ad8c995c5e676b1cd7871971f4e86abb",
+    "android-optimized-2.jsonl": "64acf45bb2a1b4064660b4f3af056f6fa85b9ae7e3f441dbc3b7dc2d7969bd81",
+    "pc-generic-1.jsonl": "fce6049ac5df21b50348f71aad85d3aaeaf72f4efe9ae80daca9035912ef356a",
+    "pc-generic-2.jsonl": "33f88c803efbfefb01f89007923807a81836f4ec0234300ff71257207eab9318",
+    "pc-optimized-1.jsonl": "3fe1c7dbc9ae375d051d8a0a87fa652b8fb14e90c5880ab1285f83a61dd75a53",
+    "pc-optimized-2.jsonl": "8a54f1a064dcc5e1e215e079a4c3e7426820119a06fb8c804d6ee314e5cae8a4"
+  }
+}

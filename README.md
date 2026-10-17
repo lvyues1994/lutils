@@ -1,6 +1,6 @@
 # lutils
 
-C++17 工具库，提供 expected、类型擦除、图像模型及 CPU/Vulkan 计算模块。
+C++17 工具库，提供 expected、类型擦除、SIMD、图像模型及 CPU/Vulkan 计算模块。
 expected 和类型擦除均为无第三方依赖的头文件库。
 
 ## expected
@@ -97,6 +97,10 @@ target_link_libraries(your_target PRIVATE lutils::erasure)
 
 ## 图像与计算
 
+通用 SIMD 的 `Batch/Mask`、Scalar/SSE2/AVX2/NEON 后端、运行时调度及 CPU 图像转换
+入口见 [SIMD 模块](docs/simd.md)，可运行示例为 [examples/simd.cpp](examples/simd.cpp)，
+实测数据见 [性能报告](docs/simd-performance.md)。
+
 架构和执行契约见 [计算模块设计](docs/compute-design.md)，类内核 API 与功能验收见
 [PDF 功能对齐](docs/pdf-parity.md)。内核使用 `struct + BufferBinding/ImageBinding/Uniform + main()`，
 C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考执行。
@@ -104,6 +108,7 @@ C++17 源码经 Clang 生成 GLSL/SPIR-V，并保留同一源码的 CPU 参考�
 | 目标 | 内容 |
 | --- | --- |
 | `lutils::image` | 通用固定块格式描述、颜色信息、正负 stride 视图、主机帧、CPU 裁剪与填充 |
+| `lutils::image_simd` | CPU UYVY422 → NV12、NV12 → RGBA8，以及可复用转换计划 |
 | `lutils::image_memory` | 统一图像资源、CPU 映射、Linux dma-buf、Android AHB BLOB/原生 RGBA/YUV 与 AImage 接入 |
 | `lutils::compute_kernel` | C++17 内核资源访问类型 |
 | `lutils::compute`、`lutils::compute_cpu` | 任务、资源、CPU 参考执行 |

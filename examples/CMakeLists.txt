@@ -1,4 +1,6 @@
 add_executable(expected_example expected.cpp)
+add_executable(simd_example simd.cpp)
+target_link_libraries(simd_example PRIVATE lutils::image_simd lutils_development)
 add_executable(image_regions_example image_regions.cpp)
 target_link_libraries(image_regions_example PRIVATE lutils::image_memory lutils_development)
 target_link_libraries(expected_example PRIVATE lutils::core lutils_development)

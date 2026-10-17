@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18
-      - run: cmake --preset release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+      - run: cmake --preset release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DLUTILS_BUILD_BENCHMARKS=ON
       - run: cmake --build --preset release -j2
       - run: ctest --preset release
   compute:
@@ -81,7 +81,7 @@ jobs:
       - name: Host and NDK compile checks (no Android device in this job)
         run: >-
           ctest --preset android-compute
-          -R '^(expected.reject|erasure.reject|kernelc\.|shader\.(reject|group.reject|preprocessing_profile))'
+          -R '^(expected.reject|erasure.reject|simd.reject|kernelc\.|shader\.(reject|group.reject|preprocessing_profile))'
       - run: |
           cmake --install build/android-compute --prefix build/android-sdk
           cpack --config build/android-compute/CPackConfig.cmake -B build/packages
