@@ -1,0 +1,41 @@
+{
+  "baseline": "843d1de3ccf547a1a3f1422633d0e4c6ee28c3f0",
+  "after": "review-fixes (implementation patch and binary hashes archived)",
+  "protocol": "abba-v1",
+  "blocks": 5,
+  "processes_per_version": 10,
+  "suites": {
+    "linux": {
+      "exact": {
+        "pass": 87,
+        "regression": 0,
+        "inconclusive": 21
+      },
+      "overwrite": {
+        "pass": 80,
+        "regression": 2,
+        "inconclusive": 26
+      }
+    },
+    "android": {
+      "exact": {
+        "pass": 69,
+        "regression": 0,
+        "inconclusive": 3
+      },
+      "overwrite": {
+        "pass": 62,
+        "regression": 8,
+        "inconclusive": 2
+      }
+    }
+  },
+  "archive": {
+    "path": ".local-artifacts/simd/review-fixes.tar.gz",
+    "sha256": "012979f016f4b26c36b94b71e9d3f947bf13821af181512e08347aae00a2856c",
+    "bytes": 3115080,
+    "files": 350,
+    "notes": "Includes diagnostic/aborted sessions; linux-release and android-release are the final complete captures. linux-retained and linux-complete were interrupted before completion to keep builds/tests out of timing."
+  },
+  "implementation_patch_sha256": "06e258837a69ce3fee7ef650d45fc87962f131e1ac054b8e7a58067694c21b0a"
+}

@@ -9,13 +9,11 @@ template <class T> LUTILS_SIMD_INLINE std::uint64_t avxMask(__m256i v) noexcept 
         return static_cast<unsigned>(_mm256_movemask_ps(_mm256_castsi256_ps(v)));
     if constexpr (sizeof(T) == 8)
         return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(v)));
-    auto bytes = static_cast<unsigned>(_mm256_movemask_epi8(v));
-    if constexpr (sizeof(T) == 1)
-        return bytes;
-    std::uint64_t out = 0;
-    for (std::size_t i = 0; i < 32 / sizeof(T); ++i)
-        out |= std::uint64_t((bytes >> (i * sizeof(T))) & 1u) << i;
-    return out;
+    if constexpr (sizeof(T) == 2) {
+        auto packed = _mm_packs_epi16(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+        return static_cast<unsigned>(_mm_movemask_epi8(packed));
+    }
+    return static_cast<unsigned>(_mm256_movemask_epi8(v));
 }
 #define LUTILS_AVX_BINARY(NAME, INTRINSIC)                                                         \
     static LUTILS_SIMD_INLINE void NAME(T *o, T const *a, T const *b) noexcept {                   \

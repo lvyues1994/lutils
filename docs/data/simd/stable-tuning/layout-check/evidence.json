@@ -1,0 +1,67 @@
+{
+  "method": "Identical object hashes and normalized hot-loop disassembly; legacy benchmark initially had compiler-selected function alignment.",
+  "linux_objects_sha256": {
+    "Scalar.cpp.o": "dcd3f4e1e9a72dacf17eb460b76a61af4121cc1919aa94f95edd219f17d24bdf",
+    "Sse2.cpp.o": "c72bcc799a2a3c3d96d2ccb6a8e2a91b5fcbf08ba3037fe8e3f7e5632c85cc0a"
+  },
+  "loops": [
+    {
+      "platform": "linux",
+      "operation": "copy_if_i32",
+      "target": "scalar",
+      "before_address": "0x10c18",
+      "after_address": "0x11068",
+      "length_bytes": 22,
+      "identical_instructions": true
+    },
+    {
+      "platform": "linux",
+      "operation": "narrow_sat_u16_u8",
+      "target": "scalar",
+      "before_address": "0x10ce0",
+      "after_address": "0x11130",
+      "length_bytes": 36,
+      "identical_instructions": true
+    },
+    {
+      "platform": "linux",
+      "operation": "sum_u32",
+      "target": "sse2",
+      "before_address": "0x10fa0",
+      "after_address": "0x113f0",
+      "length_bytes": 21,
+      "identical_instructions": true
+    },
+    {
+      "platform": "android",
+      "operation": "convert_i32_f32",
+      "target": "neon",
+      "before_address": "0x2d6c8",
+      "after_address": "0x2dce8",
+      "length_bytes": 44,
+      "identical_instructions": true,
+      "loop_sha256": "1283ff1478a390ac2e8d208074cab46c90432ef2ba9df8668b23229ad8c88dbf"
+    }
+  ],
+  "controlled_followup": {
+    "harness_change": "Identical noinline, aligned(64) attribute on micro::execute in both baseline and candidate.",
+    "linux_report": "../linux-primitives-report.json",
+    "android_intermediate_report": "android-aligned-before-store-fix-report.json",
+    "android_final_report": "../android-primitives-report.json",
+    "android_fix": "Restore the legacy NEON 32-bit fixed-size partial-store sequence; retain new byte decomposition for 8/16-bit elements.",
+    "final_android_convert_loop": {
+      "before_address": "0x2d744",
+      "after_address": "0x2dd44",
+      "entry_offset": "0x104",
+      "address_mod64": 4,
+      "identical_instructions": true
+    },
+    "final_android_copy_loop": "Mask computation, branches and stores match baseline; index preparation still has register/scheduling differences.",
+    "final_android_compress_indexes": {
+      "identical_bytes": true,
+      "before_address": "0x108b8",
+      "after_address": "0x10920"
+    },
+    "limitation": "Fixing entry alignment does not force identical complete binary/data layout. Remaining noisy cases are inconclusive, not passed."
+  }
+}

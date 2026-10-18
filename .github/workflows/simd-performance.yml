@@ -1,0 +1,92 @@
+name: Fixed hardware SIMD performance
+on:
+  workflow_dispatch:
+    inputs:
+      before:
+        description: 'Ancestor commit to compare (empty uses HEAD parent)'
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'simd/**'
+      - 'image/**'
+      - 'core/**'
+      - 'compute/runtime/**'
+      - 'benchmarks/simd/**'
+      - 'tools/simd/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/simd-performance.yml'
+permissions:
+  contents: read
+concurrency:
+  group: lutils-fixed-simd-hardware
+  cancel-in-progress: false
+jobs:
+  performance:
+    # Enable only after restricting the runner group to this workflow on the
+    # protected default branch. Never attach a personal PC to public PR jobs.
+    if: >-
+      vars.LUTILS_SIMD_PERF_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: simd-performance
+    runs-on:
+      group: lutils-performance
+      labels: [self-hosted, linux, x64, lutils-simd]
+    timeout-minutes: 90
+    env:
+      SIMD_CPU: ${{ vars.LUTILS_SIMD_CPU }}
+      SIMD_MACHINE: ${{ vars.LUTILS_SIMD_MACHINE }}
+      SIMD_BEFORE: ${{ github.event.before || inputs.before }}
+      SIMD_AFTER: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build and verify both revisions with one harness
+        run: |
+          set -euo pipefail
+          test -n "$SIMD_CPU" && test -n "$SIMD_MACHINE"
+          if [ -z "$SIMD_BEFORE" ]; then SIMD_BEFORE=$(git rev-parse HEAD^); fi
+          uv run --no-project --offline --python '>=3.12' tools/simd/prepare_pair.py --before "$SIMD_BEFORE" --after "$SIMD_AFTER" \
+            --output "$RUNNER_TEMP/lutils-pair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: Capture alternating processes and compare blocks
+        run: |
+          set -euo pipefail
+          paired_root="$RUNNER_TEMP/lutils-pair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          before_sha=$(uv run --no-project --offline --python '>=3.12' python -c 'import json,sys; print(json.load(open(sys.argv[1]))["before"])' "$paired_root/revisions.json")
+          mkdir -p build/performance
+          for suite in extended primitives va; do
+            uv run --no-project --offline --python '>=3.12' tools/simd/pair.py capture --before-build "$paired_root/before" \
+              --after-build "$paired_root/after" --before-revision "$before_sha" \
+              --after-revision "$SIMD_AFTER" --suite "$suite" --cpu "$SIMD_CPU" \
+              --machine-id "$SIMD_MACHINE" --output "$paired_root/$suite"
+          done
+          status=0
+          for suite in extended primitives va; do
+            uv run --no-project --offline --python '>=3.12' tools/simd/pair.py compare "$paired_root/$suite" \
+              --output "build/performance/$suite-report.json" || status=1
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simd-performance-${{ github.run_id }}
+          path: build/performance
+      - name: Upload raw runs and preparation logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simd-performance-raw-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/extended
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/primitives
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/va
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/*-build.log
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/revisions.json
+      - name: Remove this run's scratch directory
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/lutils-pair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

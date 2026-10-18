@@ -45,6 +45,8 @@ if(OPS OR TOOLS)
     run("${WORK}/source-consumer/consumer")
 endif()
 # Packaging a source tree below a directory called build must not exclude the entire tree.
+file(MAKE_DIRECTORY "${WORK}/source/relocated package/.local-artifacts")
+file(WRITE "${WORK}/source/relocated package/.local-artifacts/private-fixture" "local only\n")
 run("${CMAKE_COMMAND}" -S "${WORK}/source/relocated package" -B "${WORK}/repackage-build"
     -G Ninja -DLUTILS_BUILD_TESTS=OFF -DLUTILS_BUILD_EXAMPLES=OFF)
 run("${CPACK}" --config "${WORK}/repackage-build/CPackSourceConfig.cmake" -B "${WORK}/repackage")
@@ -54,4 +56,8 @@ file(ARCHIVE_EXTRACT INPUT "${repackage}" DESTINATION "${WORK}/repackage/extract
 file(GLOB roots "${WORK}/repackage/extracted/*/CMakeLists.txt")
 if(NOT roots)
     message(FATAL_ERROR "Repackaged source archive is empty")
+endif()
+file(GLOB private_artifacts "${WORK}/repackage/extracted/*/.local-artifacts")
+if(private_artifacts)
+    message(FATAL_ERROR "Local artifacts leaked into source package")
 endif()

@@ -1,0 +1,89 @@
+{
+  "baseline": "ff7fbc7",
+  "runs_per_version": 5,
+  "case_pairs": 900,
+  "counts": {
+    "pass": 844,
+    "regression": 0,
+    "inconclusive": 56
+  },
+  "suites": [
+    {
+      "suite": "android-ahb",
+      "cases": 72,
+      "pass": 72,
+      "regression": 0,
+      "inconclusive": 0,
+      "report": "android-ahb-report.json"
+    },
+    {
+      "suite": "android-ahb-rgba",
+      "cases": 36,
+      "pass": 36,
+      "regression": 0,
+      "inconclusive": 0,
+      "report": "android-ahb-rgba-report.json"
+    },
+    {
+      "suite": "android-dma",
+      "cases": 72,
+      "pass": 58,
+      "regression": 0,
+      "inconclusive": 14,
+      "report": "android-dma-report.json"
+    },
+    {
+      "suite": "android-extended",
+      "cases": 102,
+      "pass": 97,
+      "regression": 0,
+      "inconclusive": 5,
+      "report": "android-extended-report.json"
+    },
+    {
+      "suite": "android-primitives",
+      "cases": 168,
+      "pass": 162,
+      "regression": 0,
+      "inconclusive": 6,
+      "report": "android-primitives-report.json"
+    },
+    {
+      "suite": "linux-extended",
+      "cases": 153,
+      "pass": 144,
+      "regression": 0,
+      "inconclusive": 9,
+      "report": "linux-extended-report.json"
+    },
+    {
+      "suite": "linux-primitives",
+      "cases": 225,
+      "pass": 211,
+      "regression": 0,
+      "inconclusive": 14,
+      "report": "linux-primitives-report.json"
+    },
+    {
+      "suite": "linux-va",
+      "cases": 72,
+      "pass": 64,
+      "regression": 0,
+      "inconclusive": 8,
+      "report": "linux-va-report.json"
+    }
+  ],
+  "provenance": "Baseline implementation exported from ff7fbc7 with the common benchmark harness overlay. Each pair has matching build/harness fingerprints. All sixteen primary captures match the final tested binaries. Raw diagnostic runs retained in layout-check.",
+  "validation": {
+    "linux_full": {
+      "passed": 56,
+      "skipped": 1,
+      "skip_reason": "No accessible DMA heap"
+    },
+    "linux_simd": 21,
+    "sanitizers": 18,
+    "regression_tool_unit_tests": 18,
+    "android": "NDK r28 arm64 build; scalar, NEON, dispatch, image, resources and tuning tests passed."
+  },
+  "ci": "Workflow implemented and disabled; dedicated runner and repository configuration are still required."
+}

@@ -16,22 +16,136 @@ template <class T> T take(lutils::Result<T> r) {
     return std::move(r).value();
 }
 void choose() {
-    auto timing = [](s::Target target, double ns) {
-        return im::CpuTargetTiming{target, {ns, ns, ns}, ns};
+    using im::simd_detail::PairSamples;
+    using im::simd_detail::stableGain;
+    auto samples = [](double value) {
+        return PairSamples{{100, 100, 100, 100, 100}, {value, value, value, value, value}};
     };
-    auto pick = [&](std::vector<im::CpuTargetTiming> const &values) {
-        return im::simd_detail::chooseTiming(values, s::Target::Avx2);
-    };
-    check(pick({}) == s::Target::Avx2);
-    check(pick({timing(s::Target::Scalar, 1)}) == s::Target::Avx2);
-    check(pick({timing(s::Target::Avx2, 100), timing(s::Target::Scalar, 96)}) == s::Target::Avx2);
-    check(pick({timing(s::Target::Avx2, 100), timing(s::Target::Scalar, 95)}) == s::Target::Scalar);
-    check(pick({timing(s::Target::Avx2, 100), timing(s::Target::Scalar, 100)}) == s::Target::Avx2);
-    check(pick({timing(s::Target::Avx2, 100), timing(s::Target::Scalar, NAN)}) == s::Target::Avx2);
-    check(pick({timing(s::Target::Avx2, 100), timing(s::Target::Scalar, -1)}) == s::Target::Avx2);
-    auto insufficient = timing(s::Target::Scalar, 1);
-    insufficient.nanoseconds.resize(2);
-    check(pick({timing(s::Target::Avx2, 100), insufficient}) == s::Target::Avx2);
+    check(!stableGain({}));
+    check(stableGain(samples(90)).has_value());
+    check(stableGain(samples(95)).has_value());
+    for (double x : {96.0, 100.0, -1.0, 0.0, double(NAN), double(INFINITY)})
+        check(!stableGain(samples(x)));
+    auto noisy = samples(90);
+    noisy.candidate = {80, 85, 95, 105, 115};
+    check(!stableGain(noisy));
+    noisy.candidate = {1, 100, 100, 100, 100};
+    check(!stableGain(noisy));
+    noisy.candidate = {90, 90, 90, 110, 110};
+    check(!stableGain(noisy));
+    noisy = samples(90);
+    noisy.baseline.pop_back();
+    check(!stableGain(noisy));
+    check(im::simd_detail::confirmed(samples(90), samples(92)));
+    check(!im::simd_detail::confirmed(samples(90), samples(110)));
+    // Linear drift cancels inside each complete ABBA/BAAB block.
+    PairSamples drift;
+    unsigned calls = 0;
+    auto complete =
+        im::simd_detail::collectPairs(drift, [&](bool) -> lutils::Result<std::optional<double>> {
+            return std::optional<double>{100.0 + double(++calls)};
+        });
+    check(complete && complete.value() && calls == 20);
+    check(drift.baseline == drift.candidate && !stableGain(drift));
+    PairSamples partial;
+    calls = 0;
+    auto timeout =
+        im::simd_detail::collectPairs(partial, [&](bool) -> lutils::Result<std::optional<double>> {
+            if (++calls == 6)
+                return std::optional<double>{};
+            return std::optional<double>{100};
+        });
+    check(timeout && !timeout.value() && partial.baseline.size() == 1 &&
+          partial.candidate.size() == 1);
+    PairSamples failed;
+    auto failure =
+        im::simd_detail::collectPairs(failed, [](bool) -> lutils::Result<std::optional<double>> {
+            return lutils::Error{lutils::ErrorCode::InvalidArgument, "injected execution failure"};
+        });
+    check(!failure && failed.baseline.empty());
+}
+void controller() {
+    using namespace std::chrono;
+    using Clock = steady_clock;
+    unsigned completeCalls = 0;
+    for (unsigned mode = 0; mode < 7; ++mode) {
+        Clock::time_point now{};
+        unsigned calls[2]{};
+        auto result = im::simd_detail::calibrate(
+            2, milliseconds{100}, now, [&] { return now; },
+            [&](std::size_t index) -> lutils::Result<void> {
+                ++calls[index];
+                auto cost = microseconds{index == 0 ? 100 : 80};
+                if (mode == 1 && index == 0)
+                    cost = microseconds{calls[0] % 2 ? 100 : 500};
+                if (mode == 2 && index == 1)
+                    cost = microseconds{150};
+                if (mode == 3 && index == 1 && calls[1] > 21)
+                    cost = microseconds{120};
+                if (mode == 4 && index == 1 && calls[1] > 1)
+                    cost = milliseconds{30};
+                if (mode == 6)
+                    return lutils::Error{lutils::ErrorCode::InvalidArgument, "injected"};
+                now += cost;
+                if (mode == 5 && calls[0] + calls[1] == completeCalls)
+                    now = Clock::time_point{} + milliseconds{101};
+                return {};
+            });
+        if (mode == 6) {
+            check(!result);
+            continue;
+        }
+        auto value = take(std::move(result));
+        check(value.selected == ((mode == 0 || mode == 5) ? 1u : 0u));
+        im::CpuTuningOutcome const expected[]{im::CpuTuningOutcome::Selected,
+                                              im::CpuTuningOutcome::WarmupUnstable,
+                                              im::CpuTuningOutcome::NoGain,
+                                              im::CpuTuningOutcome::NoGain,
+                                              im::CpuTuningOutcome::InsufficientBudget,
+                                              im::CpuTuningOutcome::Selected};
+        check(value.outcome == expected[mode]);
+        if (mode == 0) {
+            completeCalls = calls[0] + calls[1];
+            check(value.samples[1].size() == 11);
+        }
+        if (mode == 1)
+            check(now.time_since_epoch() >= milliseconds{20} && calls[1] == 0);
+        if (mode == 2)
+            check(value.samples[1].size() == 1);
+        if (mode == 4)
+            check(value.samples[1].size() < 6);
+    }
+}
+void smallBudgets() {
+    using namespace std::chrono;
+    for (auto ms : {1, 3, 4, 8, 16, 19, 20, 21, 23, 25, 100}) {
+        steady_clock::time_point now{};
+        auto value = take(im::simd_detail::calibrate(
+            3, milliseconds{ms}, now, [&] { return now; },
+            [&](std::size_t index) -> lutils::Result<void> {
+                now += nanoseconds{index == 0 ? 1000 : index == 1 ? 800 : 500};
+                return {};
+            }));
+        check(value.selected == 2 && value.outcome == im::CpuTuningOutcome::Selected);
+        check(now.time_since_epoch() < milliseconds{ms});
+    }
+    for (auto cost : {microseconds{150}, microseconds{1100}}) {
+        steady_clock::time_point now{};
+        auto value = take(im::simd_detail::calibrate(
+            2, milliseconds{1}, now, [&] { return now; },
+            [&](std::size_t) -> lutils::Result<void> {
+                now += cost;
+                return {};
+            }));
+        check(value.selected == 0);
+        check(value.outcome == (cost.count() == 150 ? im::CpuTuningOutcome::InsufficientBudget
+                                                    : im::CpuTuningOutcome::BudgetExhausted));
+    }
+    steady_clock::time_point now{};
+    auto single = take(im::simd_detail::calibrate(
+        1, milliseconds{1}, now, [&] { return now; },
+        [](std::size_t) -> lutils::Result<void> { throw std::runtime_error("unexpected run"); }));
+    check(single.selected == 0 && single.outcome == im::CpuTuningOutcome::NoAlternative);
 }
 void images() {
     for (auto width : {2u, 14u, 16u, 30u, 32u, 34u})
@@ -70,9 +184,12 @@ void images() {
             check(bool(scalar.run(input, ref.view())));
             auto tuned = take(im::tuneCpuConversion(input, output));
             check(s::supported(tuned.plan.target()) && tuned.elapsed.count() > 0);
-            auto count = tuned.timings.front().nanoseconds.size();
-            for (auto const &t : tuned.timings)
-                check(t.nanoseconds.size() == count && count <= 5);
+            for (auto const &t : tuned.timings) {
+                for (auto ns : t.nanoseconds)
+                    check(ns > 0 && std::isfinite(ns));
+                if (t.target == tuned.plan.target() && t.target != baseline.target())
+                    check(t.nanoseconds.size() == 11);
+            }
             auto outGeometry = take(im::geometry(dest));
             auto reference = ref.view();
             for (std::size_t p = 0; p < outGeometry.size(); ++p)
@@ -94,6 +211,8 @@ void images() {
 int main() {
     try {
         choose();
+        controller();
+        smallBudgets();
         images();
         std::cout << "CPU tuning contracts passed\n";
     } catch (std::exception const &e) {

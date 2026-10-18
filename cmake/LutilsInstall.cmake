@@ -62,6 +62,6 @@ if(lutils_top_level)
     endforeach()
     set(CPACK_VERBATIM_VARIABLES YES)
     set(CPACK_SOURCE_IGNORE_FILES
-        "^${lutils_source_regex}/(build|\\.git|\\.codex|\\.agents)(/|$);^${lutils_source_regex}/CMakeUserPresets\\.json$;~$")
+        "^${lutils_source_regex}/(build|\\.git|\\.codex|\\.agents|\\.local-artifacts)(/|$);^${lutils_source_regex}/CMakeUserPresets\\.json$;~$")
     include(CPack)
 endif()

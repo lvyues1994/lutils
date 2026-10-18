@@ -15,9 +15,13 @@ LUTILS_SIMD_INLINE Compressed<Batch<T, A>> compress(Batch<T, A> value,
         detail::CompressNative<T, A>::run(detail::Access::data(out.values),
                                           detail::Access::data(value),
                                           detail::MaskAccess::bits(selected));
-        if constexpr (std::is_same_v<A, abi::neon>)
+        if constexpr (std::is_same_v<A, abi::neon> && Batch<T, A>::size <= 8)
             out.count = detail::compressIndexes.counts[detail::MaskAccess::bits(selected)];
-        else
+        else if constexpr (std::is_same_v<A, abi::neon>) {
+            auto bits = detail::MaskAccess::bits(selected);
+            out.count = detail::compressIndexes.counts[bits & 255] +
+                        detail::compressIndexes.counts[bits >> 8];
+        } else
             out.count = count(selected);
         return out;
     }
@@ -36,25 +40,57 @@ LUTILS_SIMD_INLINE std::size_t compress_store(T *out, Batch<T, A> value,
         std::memcpy(out, detail::Access::data(value), sizeof(T) * value.size);
         return value.size;
     }
+    if constexpr (std::is_same_v<A, abi::neon> && sizeof(T) == 8) {
+        // Two lanes and a partial nonempty mask: exactly one element survives.
+        auto element = selected.lane(0) ? value.lane(0) : value.lane(1);
+        std::memcpy(out, &element, sizeof(T));
+        return 1;
+    }
     if constexpr (detail::CompressNative<T, A>::available) {
         auto packed = compress(value, selected);
+        if constexpr (std::is_same_v<A, abi::avx2> && sizeof(T) >= 4) {
+            detail::CompressNative<T, A>::storePrefix(out, detail::Access::data(packed.values),
+                                                      packed.count);
+            return packed.count;
+        }
         if constexpr (!std::is_same_v<A, abi::neon>) {
             std::memcpy(out, detail::Access::data(packed.values), sizeof(T) * packed.count);
             return packed.count;
         }
-        // NEON compression handles four 32-bit lanes. Constant-size copies
-        // avoid a dynamic memcpy per batch without over-writing the tail.
-        static_assert(sizeof(T) == 4);
-        auto const *in = detail::Access::data(packed.values);
-        auto remaining = packed.count;
-        if (remaining >= 2) {
-            std::memcpy(out, in, 2 * sizeof(T));
-            out += 2;
-            in += 2;
-            remaining -= 2;
+        if constexpr (sizeof(T) == 4) {
+            auto const *in = detail::Access::data(packed.values);
+            auto remaining = packed.count;
+            if (remaining >= 2) {
+                std::memcpy(out, in, 2 * sizeof(T));
+                out += 2;
+                in += 2;
+                remaining -= 2;
+            }
+            if (remaining)
+                std::memcpy(out, in, sizeof(T));
+            return packed.count;
         }
-        if (remaining)
-            std::memcpy(out, in, sizeof(T));
+        // Partial NEON stores contain fewer than 16 bytes; never over-store.
+        auto const *in = reinterpret_cast<std::byte const *>(detail::Access::data(packed.values));
+        auto *dest = reinterpret_cast<std::byte *>(out);
+        auto bytes = sizeof(T) * packed.count;
+        if (bytes & 8) {
+            std::memcpy(dest, in, 8);
+            dest += 8;
+            in += 8;
+        }
+        if (bytes & 4) {
+            std::memcpy(dest, in, 4);
+            dest += 4;
+            in += 4;
+        }
+        if (bytes & 2) {
+            std::memcpy(dest, in, 2);
+            dest += 2;
+            in += 2;
+        }
+        if (bytes & 1)
+            std::memcpy(dest, in, 1);
         return packed.count;
     }
     std::size_t written = 0;

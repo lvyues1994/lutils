@@ -3,7 +3,13 @@
 #include <lutils/simd.hpp>
 namespace micro {
 namespace s = lutils::simd;
-template <class A> std::uint64_t execute(Operation op, Data const &d) {
+// Keep entry alignment stable when unrelated library code changes link layout.
+// The opaque call boundary also prevents the harness from specializing a case.
+template <class A>
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, aligned(64)))
+#endif
+std::uint64_t execute(Operation op, Data const &d) {
     using B = s::Batch<std::uint8_t, A>;
     using W = s::Batch<std::uint16_t, A>;
     using I = s::Batch<std::int32_t, A>;

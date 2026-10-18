@@ -2,6 +2,7 @@
 #include <cmath>
 #include <lutils/simd/Batch.hpp>
 #include <lutils/simd/detail/Conversions.hpp>
+#include <lutils/simd/detail/FloatToInteger.hpp>
 
 namespace lutils::simd {
 template <class V, std::size_t N> struct WideParts {
@@ -77,13 +78,17 @@ LUTILS_SIMD_INLINE Batch<To, A> narrow_truncate(WideParts<Batch<From, A>, N> con
                             wide.parts[i / Batch<From, A>::size].lane(i % Batch<From, A>::size))));
     return out;
 }
-enum class Rounding { TowardZero, NearestEven, Downward, Upward };
 template <class To, class From, class A,
           std::enable_if_t<std::is_integral_v<To> && std::is_floating_point_v<From>, int> = 0>
 LUTILS_SIMD_INLINE Batch<To, A> convert_saturate(Batch<From, A> value, Rounding rounding) noexcept {
     Batch<To, A> out;
     static_assert(out.size == value.size,
                   "convert requires equal lane counts; widen/narrow separately");
+    if constexpr (detail::FloatToIntegerNative<To, From, A>::available) {
+        detail::FloatToIntegerNative<To, From, A>::run(
+            detail::Access::data(out), detail::Access::data(value), rounding);
+        return out;
+    }
     constexpr auto low = std::numeric_limits<To>::lowest(), high = std::numeric_limits<To>::max();
     for (std::size_t i = 0; i < value.size; ++i) {
         auto x = static_cast<long double>(value.lane(i));

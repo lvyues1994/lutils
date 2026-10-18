@@ -9,13 +9,9 @@ template <class T> LUTILS_SIMD_INLINE std::uint64_t sseMask(__m128i v) noexcept 
         return static_cast<unsigned>(_mm_movemask_ps(_mm_castsi128_ps(v)));
     if constexpr (sizeof(T) == 8)
         return static_cast<unsigned>(_mm_movemask_pd(_mm_castsi128_pd(v)));
-    auto bytes = static_cast<unsigned>(_mm_movemask_epi8(v));
-    if constexpr (sizeof(T) == 1)
-        return bytes;
-    std::uint64_t out = 0;
-    for (std::size_t i = 0; i < 16 / sizeof(T); ++i)
-        out |= std::uint64_t((bytes >> (i * sizeof(T))) & 1u) << i;
-    return out;
+    if constexpr (sizeof(T) == 2)
+        return static_cast<unsigned>(_mm_movemask_epi8(_mm_packs_epi16(v, v))) & 255u;
+    return static_cast<unsigned>(_mm_movemask_epi8(v));
 }
 #define LUTILS_SSE_BINARY(NAME, INTRINSIC)                                                         \
     static LUTILS_SIMD_INLINE void NAME(T *o, T const *a, T const *b) noexcept {                   \

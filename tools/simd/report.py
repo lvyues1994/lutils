@@ -10,7 +10,9 @@ import statistics
 
 def read_run(path):
     records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not records or records[0].get("schema") != 1 or records[-1].get("type") != "complete":
+    if (not records or not all(isinstance(r, dict) for r in records)
+            or records[0].get("type") != "environment" or records[0].get("schema") != 1
+            or records[-1].get("type") != "complete"):
         raise ValueError(f"{path}: incomplete run or unsupported schema")
     cases = records[1:-1]
     seen = set()
@@ -23,18 +25,25 @@ def read_run(path):
         seen.add(key)
         samples = case["samples"]
         expected = 1 if records[0]["smoke"] else 9
-        if len(samples) != expected:
+        if not isinstance(samples, list) or len(samples) != expected:
             raise ValueError(f"{path}: wrong sample count")
         times = []
         for sample in samples:
-            if sample["iterations"] <= 0 or sample["elapsed_ns"] <= 0:
+            if (not isinstance(sample, dict)
+                    or type(sample.get("iterations")) is not int
+                    or type(sample.get("elapsed_ns")) is not int
+                    or not 0 < sample["iterations"] <= 2**63 - 1
+                    or not 0 < sample["elapsed_ns"] <= 2**63 - 1):
                 raise ValueError(f"{path}: invalid timing")
             times.append(sample["elapsed_ns"] / sample["iterations"])
         median = statistics.median(times)
         metrics = {"median_ns": median, "min_ns": min(times), "max_ns": max(times),
                    "mad_ns": statistics.median(abs(t - median) for t in times)}
         for name, expected in metrics.items():
-            if not math.isclose(case[name], expected, rel_tol=1e-9, abs_tol=1e-6):
+            value = case[name]
+            if (type(value) not in (int, float) or abs(value) > 2**63 - 1 or not math.isfinite(value)
+                    or (value <= 0 if name != "mad_ns" else value < 0)
+                    or not math.isclose(value, expected, rel_tol=1e-9, abs_tol=1e-6)):
                 raise ValueError(f"{path}: inconsistent {name}")
     return cases
 

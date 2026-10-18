@@ -72,3 +72,12 @@ add_executable(simd_tuning_tests tuning.cpp)
 target_link_libraries(simd_tuning_tests PRIVATE lutils::image_simd lutils_development)
 add_test(NAME simd.tuning COMMAND simd_tuning_tests)
 set_tests_properties(simd.tuning PROPERTIES TIMEOUT 30)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME simd.performance_report COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/simd/test_regression.py)
+    set_tests_properties(simd.performance_report PROPERTIES TIMEOUT 30)
+    add_test(NAME simd.performance_pair COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tools/simd/test_pair.py)
+    set_tests_properties(simd.performance_pair PROPERTIES TIMEOUT 30)
+endif()

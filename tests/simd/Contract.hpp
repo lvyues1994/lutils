@@ -1,9 +1,11 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <limits>
 #include <lutils/simd.hpp>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #if defined(__unix__) || defined(__ANDROID__)
@@ -66,7 +68,8 @@ template <class T, class A> void integers() {
             check(ge.lane(i) == (aa[i] >= bb[i]));
             check(gt.lane(i) == (aa[i] > bb[i]));
             if constexpr (sizeof(T) < 8) {
-                // Long double represents these sums exactly. Test 64-bit boundaries separately.
+                // Long double represents these sums exactly. Test 64-bit boundaries
+                // separately.
                 auto lo = static_cast<long double>(std::numeric_limits<T>::lowest());
                 auto hi = static_cast<long double>(std::numeric_limits<T>::max());
                 auto exact = static_cast<long double>(aa[i]) + static_cast<long double>(bb[i]);
@@ -226,7 +229,34 @@ template <class T, class A> void masksAndMemory() {
         auto v = s::load_partial<V>(p, n);
         check(s::count(v == sequence) == n);
         check(s::compress_store(p, sequence, s::first_n<V>(n)) == n);
+        typename V::mask_type suffix;
+        for (std::size_t i = 0; i < V::size; ++i)
+            suffix.set_lane(i, i >= V::size - n);
+        check(s::compress_store(p, sequence, suffix) == n);
+        for (std::size_t i = 0; i < n; ++i)
+            check(p[i] == sequence.lane(V::size - n + i));
     }
+    // The last incomplete input block must never trigger a complete vector store.
+    for (auto write : {s::FilterWrite::Exact, s::FilterWrite::AllowOverwrite})
+        for (std::size_t n = 1; n <= 3 * V::size + 1; ++n)
+            for (unsigned pattern = 0; pattern < 4; ++pattern) {
+                auto *p = reinterpret_cast<T *>(guard - n * sizeof(T));
+                std::vector<T> input(n), expected;
+                for (std::size_t i = 0; i < n; ++i) {
+                    input[i] = static_cast<T>(pattern == 0   ? 0
+                                              : pattern == 1 ? 1
+                                              : pattern == 2 ? i % 2
+                                                             : i + 1 < n);
+                    if (input[i] != T{})
+                        expected.push_back(input[i]);
+                }
+                auto predicate = [](V v) { return v != V{}; };
+                check((s::copy_if<T, A>(input.data(), n, p, predicate, write) == expected.size()));
+                check(std::equal(expected.begin(), expected.end(), p));
+                std::copy(input.begin(), input.end(), p);
+                check((s::copy_if<T, A>(p, n, p, predicate, write) == expected.size()));
+                check(std::equal(expected.begin(), expected.end(), p));
+            }
 #endif
 }
 template <class T, class A> void rearrange() {
@@ -318,6 +348,15 @@ template <class A> void algorithms() {
     check((!s::mismatch<std::int32_t, A>(nullptr, nullptr, 0)));
     check((!s::find_if<std::int32_t, A>(nullptr, 0, predicate)));
     check((s::copy_if<std::int32_t, A>(nullptr, 0, nullptr, predicate) == 0));
+    std::array<std::int32_t, 3> moveInput{0, 1, 0}, moveOutput{};
+    auto moveOnly = [] {
+        return [value = std::make_unique<std::int32_t>(0)](V v) { return v == V{*value}; };
+    };
+    check((s::copy_if<std::int32_t, A>(moveInput.data(), moveInput.size(), moveOutput.data(),
+                                       moveOnly()) == 2));
+    for (auto mode : {s::FilterWrite::Exact, s::FilterWrite::AllowOverwrite})
+        check((s::copy_if<std::int32_t, A>(moveInput.data(), moveInput.size(), moveOutput.data(),
+                                           moveOnly(), mode) == 2));
     for (std::size_t n = 0; n < 3 * V::size + 3; ++n) {
         std::vector<std::int32_t> input(n), copy, output(n + 1, 99);
         std::vector<std::int32_t> expected;

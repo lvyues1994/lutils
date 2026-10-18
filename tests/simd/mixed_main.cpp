@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <lutils/simd/Dispatch.hpp>
 int main() {
     if (!lutils::simd::supported(lutils::simd::Target::Sse2))
@@ -37,6 +38,14 @@ int main() {
     };
     if (!packing(baselinePacking))
         return 1;
+    auto conversion = [](auto function) {
+        float in[]{2.5f, 3.5f, 2147483648.0f, std::numeric_limits<float>::infinity()};
+        std::array<std::uint32_t, 4> converted{};
+        function(converted.data(), in);
+        return converted == std::array<std::uint32_t, 4>{2, 4, 2147483648u, 4294967295u};
+    };
+    if (!conversion(baselineConversion))
+        return 1;
     auto features = lutils::simd::cpu_features();
     if (features.avx2 && features.fma) {
         auto advanced = advancedAddress();
@@ -45,6 +54,8 @@ int main() {
         if (!arithmetic(advancedArithmetic))
             return 1;
         if (!packing(advancedPacking))
+            return 1;
+        if (!conversion(advancedConversion))
             return 1;
     }
     std::cout << "mixed ISA linkage and nonfused arithmetic passed\n";

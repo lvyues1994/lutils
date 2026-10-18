@@ -55,11 +55,108 @@ template <class To, class From, class A> void roundingModes() {
         check(s::all(s::convert_saturate<To>(F{std::numeric_limits<From>::quiet_NaN()}, mode) ==
                      s::Batch<To, A>{}));
     }
-    // The representable value immediately below 2^digits is inside the integer range.
+    // The representable value immediately below 2^digits is inside the integer
+    // range.
     auto bound = std::ldexp(From{1}, std::numeric_limits<To>::digits);
     auto inside = std::nextafter(bound, From{});
     check(s::all(s::convert_saturate<To>(F{inside}, s::Rounding::TowardZero) ==
                  s::Batch<To, A>{static_cast<To>(inside)}));
+}
+template <class To, class A> void nativeRounding() {
+    using F = s::Batch<float, A>;
+    auto original = std::fegetround();
+    struct Restore {
+        int mode;
+        ~Restore() { std::fesetround(mode); }
+    } restore{original};
+    std::vector<float> values{0.0f,
+                              -0.0f,
+                              std::numeric_limits<float>::denorm_min(),
+                              -std::numeric_limits<float>::denorm_min(),
+                              INFINITY,
+                              -INFINITY,
+                              NAN};
+    for (float x : {-4294967296.0f, -2147483648.0f, -16777216.0f, -8388608.0f, -2.5f, -0.5f, 0.5f,
+                    1.5f, 2.5f, 8388608.0f, 16777216.0f, 2147483648.0f, 4294967296.0f}) {
+        values.push_back(x);
+        values.push_back(std::nextafter(x, -INFINITY));
+        values.push_back(std::nextafter(x, INFINITY));
+    }
+    std::uint64_t state = 71983;
+    for (unsigned i = 0; i < 4096; ++i) {
+        auto bits = static_cast<std::uint32_t>(next(state));
+        float x;
+        std::memcpy(&x, &bits, sizeof(x));
+        values.push_back(x);
+    }
+    for (auto environment : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+        check(std::fesetround(environment) == 0);
+        for (auto mode : {s::Rounding::TowardZero, s::Rounding::NearestEven, s::Rounding::Downward,
+                          s::Rounding::Upward})
+            for (std::size_t base = 0; base < values.size(); base += F::size) {
+                F input;
+                for (std::size_t i = 0; i < F::size; ++i)
+                    input.set_lane(i, values[(base + i) % values.size()]);
+                auto result = s::convert_saturate<To>(input, mode);
+                for (std::size_t i = 0; i < F::size; ++i) {
+                    // Same contract via the explicitly scalar backend; never an unsafe
+                    // C++ cast.
+                    auto expected = s::convert_saturate<To>(
+                        s::Batch<float, s::abi::scalar>{input.lane(i)}, mode);
+                    check(result.lane(i) == expected.lane(0));
+                }
+                check(std::fegetround() == environment);
+            }
+    }
+}
+template <class T, class A> void inPlaceFilter() {
+    using V = s::Batch<T, A>;
+    for (auto write : {s::FilterWrite::Exact, s::FilterWrite::AllowOverwrite})
+        for (bool zeros : {false, true})
+            for (std::size_t size = 0; size < 3 * V::size + 3; ++size) {
+                std::vector<T> input(size + 1, T{99}), expected;
+                for (std::size_t i = 0; i < size; ++i) {
+                    input[i] = static_cast<T>(i % 11);
+                    if (zeros ? input[i] == 0 : input[i] > 4)
+                        expected.push_back(input[i]);
+                }
+                auto predicate = [=](V v) { return zeros ? v == V{} : v > V{T{4}}; };
+                std::vector<T> output(size + 2, T{99});
+                auto written =
+                    s::copy_if<T, A>(input.data(), size, output.data() + 1, predicate, write);
+                check(written == expected.size() && output.front() == T{99} &&
+                      output.back() == T{99});
+                check(std::equal(expected.begin(), expected.end(), output.begin() + 1));
+                if (write == s::FilterWrite::Exact)
+                    check(std::all_of(output.data() + 1 + written, output.data() + output.size(),
+                                      [](T x) { return x == T{99}; }));
+                written = s::copy_if<T, A>(input.data(), size, input.data(), predicate, write);
+                check(written == expected.size() && input.back() == T{99});
+                check(std::equal(expected.begin(), expected.end(), input.begin()));
+            }
+}
+template <class A> void doubleCompression() {
+    using V = s::Batch<double, A>;
+    V values;
+    for (std::size_t i = 0; i < V::size; ++i) {
+        std::uint64_t bits = i % 2 ? 0x8000000000000000ULL : 0x7ff8000000000001ULL + i;
+        double x;
+        std::memcpy(&x, &bits, sizeof(x));
+        values.set_lane(i, x);
+    }
+    for (unsigned bits = 0; bits < (1u << V::size); ++bits) {
+        typename V::mask_type mask;
+        for (std::size_t i = 0; i < V::size; ++i)
+            mask.set_lane(i, (bits >> i) & 1u);
+        auto result = s::compress(values, mask);
+        std::size_t j = 0;
+        for (std::size_t i = 0; i < V::size; ++i)
+            if (mask.lane(i)) {
+                auto a = result.values.lane(j++), b = values.lane(i);
+                check(std::memcmp(&a, &b, sizeof(a)) == 0);
+            }
+        check(j == result.count);
+    }
 }
 template <class T, class A> void moreFloating() {
     using V = s::Batch<T, A>;
@@ -106,8 +203,12 @@ template <class Integer, class Floating, class A> void integerToFloat() {
             check(result.lane(i) == static_cast<Floating>(input.lane(i)));
     }
     Integer const edges[]{std::numeric_limits<Integer>::lowest(),
-                           std::numeric_limits<Integer>::max(), Integer{0}, Integer{1},
-                           Integer{16777215}, Integer{16777216}, Integer{16777217}};
+                          std::numeric_limits<Integer>::max(),
+                          Integer{0},
+                          Integer{1},
+                          Integer{16777215},
+                          Integer{16777216},
+                          Integer{16777217}};
     for (std::size_t base = 0; base < 7; ++base) {
         V input;
         for (std::size_t i = 0; i < V::size; ++i)
@@ -117,7 +218,8 @@ template <class Integer, class Floating, class A> void integerToFloat() {
             check(out.lane(i) == static_cast<Floating>(input.lane(i)));
         if constexpr (std::is_signed_v<Integer> && std::is_same_v<Floating, float>) {
             input = V{-16777217};
-            check(s::all(s::convert<Floating>(input) == s::Batch<Floating, A>{Floating{-16777216}}));
+            check(
+                s::all(s::convert<Floating>(input) == s::Batch<Floating, A>{Floating{-16777216}}));
         }
     }
 }
@@ -136,6 +238,12 @@ template <class T, class A> void comparisonBits() {
     }
 }
 template <class A> void moreContracts() {
+    nativeRounding<std::int32_t, A>();
+    nativeRounding<std::uint32_t, A>();
+    inPlaceFilter<std::uint8_t, A>();
+    inPlaceFilter<std::uint16_t, A>();
+    inPlaceFilter<std::uint64_t, A>();
+    doubleCompression<A>();
     comparisonBits<std::int32_t, A>();
     comparisonBits<std::uint32_t, A>();
     comparisonBits<std::int64_t, A>();
@@ -197,13 +305,21 @@ template <class A> void moreContracts() {
             mask.set_lane(i, ((bits >> i) & 1) != 0);
         auto selected = s::select(mask, sequence, B{99});
         auto compressed = s::compress(sequence, mask);
+        std::array<std::uint8_t, B::size + 2> stored;
+        stored.fill(99);
+        auto written = s::compress_store(stored.data() + 1, sequence, mask);
         std::size_t j = 0;
         for (std::size_t i = 0; i < B::size; ++i) {
             check(selected.lane(i) == (mask.lane(i) ? sequence.lane(i) : 99));
-            if (mask.lane(i))
+            if (mask.lane(i)) {
+                check(stored[1 + j] == sequence.lane(i));
                 check(compressed.values.lane(j++) == sequence.lane(i));
+            }
         }
         check(j == compressed.count);
+        check(j == written && stored.front() == 99);
+        for (auto i = j + 1; i < stored.size(); ++i)
+            check(stored[i] == 99);
     }
     using I = s::Batch<std::int16_t, A>;
     for (unsigned amount = 0; amount <= 17; ++amount) {

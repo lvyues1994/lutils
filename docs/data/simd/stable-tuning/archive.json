@@ -1,0 +1,13 @@
+{
+  "source_revision": "843d1de3ccf547a1a3f1422633d0e4c6ee28c3f0",
+  "archive": ".local-artifacts/simd/843d1de/stable-tuning-original.tar.gz",
+  "sha256": "a49057ca1f43386eb90443f3b734eb774d41a4851d46d0d6af5a5bc1554dc974",
+  "archive_bytes": 1852015,
+  "archived_files": 267,
+  "raw_files_removed": 253,
+  "storage": "Local ignored archive; not uploaded. CI captures are uploaded as job artifacts.",
+  "recovery_bundle": {
+    "path": ".local-artifacts/simd/843d1de/recovery.bundle",
+    "sha256": "78ad579c30520767f13a98d394c82bb7a6150c7c09fda6187444ed13099da62d"
+  }
+}
