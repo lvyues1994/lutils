@@ -111,3 +111,6 @@ Linux 同时安装多个 EGL 驱动时，可设置
 Linux GL/GLES 测试复用转换、区域、数学、共享内存/原子、图像格式与光追 CPU 对比，
 另检查异步快照、设备隔离、跨线程释放、空执行网格、丢弃 Completion、原始位传输和错误诊断。
 DMA 元数据、映射和同步错误路径另有模拟 ioctl 测试；它不替代真实 DMA 互操作验证。
+
+读回路径的优化、RTX 5070 Ti 前后性能和复现方法见
+[OpenGL 读回与 BGRA 转换性能](opengl-readback-performance.md)。

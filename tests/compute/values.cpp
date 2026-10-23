@@ -1,6 +1,7 @@
 #include <iostream>
 #include <lutils/compute/Compute.hpp>
 #include <stdexcept>
+#include "PixelDownload.hpp"
 using namespace lutils::compute;
 using namespace lutils::compute::kernel;
 void check(bool value) {
@@ -99,6 +100,7 @@ void resourceContracts() {
 int main() {
     try {
         resourceContracts();
+        pixel_download_test::run();
         static_assert(IsPixel<MixedPixel>::value);
         static_assert(!IsPixel<int>::value);
         static_assert(sizeof(kernel::cpu::RGB565) == 2);
@@ -122,6 +124,9 @@ int main() {
         MixedPixel out;
         decodePixel<ImageFormat::RGBA32F>(out, channels);
         check(out.r == 128 && out.g == p.g && out.b == p.b && out.a == p.a);
+        std::array<unsigned char, 4> rgba{128, 64, 255, 255};
+        lutils::compute::detail::decodeImagePixels<ImageFormat::RGBA8>(&out, rgba.data(), 1);
+        check(out.r == 128 && out.g == 64.0f / 255.0f && out.b == 1.0f && out.a == 1.0f);
         PackedPixel<31, 1, 0> wide;
         wide.set<Channel::R>(1.0f);
         check(wide.bits == 0x7fffffffu && wide.get<Channel::G>() == 0.0f);

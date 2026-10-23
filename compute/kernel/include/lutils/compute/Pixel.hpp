@@ -268,9 +268,11 @@ template <> struct ImageValue<NumberKind::SInt> {
     using Type = std::int32_t;
 };
 template <class T, NumberKind K, std::size_t N> struct FormatCodec {
+    using Storage = T;
     using ChannelType = typename ImageValue<K>::Type;
     using VectorType = Vec<ChannelType, 4>;
     static constexpr auto kind = K;
+    static constexpr std::size_t channels = N;
     static constexpr std::size_t bytes = sizeof(T) * N;
     static VectorType load(void const *ptr) {
         std::array<T, N> raw{};

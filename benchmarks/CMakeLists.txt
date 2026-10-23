@@ -12,3 +12,10 @@ if(LUTILS_BUILD_IMAGE_OPS)
     endif()
 endif()
 add_subdirectory(simd)
+if(LUTILS_BUILD_IMAGE_OPS AND LUTILS_ENABLE_OPENGL AND NOT ANDROID)
+    add_executable(opengl_readback_benchmark opengl_readback.cpp)
+    target_link_libraries(opengl_readback_benchmark PRIVATE
+        lutils_camera_rays lutils_sphere_tracer lutils_visualize_rays
+        lutils::compute_cpu lutils::compute_opengl lutils_development)
+    set_target_properties(opengl_readback_benchmark PROPERTIES CXX_EXTENSIONS OFF)
+endif()

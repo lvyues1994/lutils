@@ -196,6 +196,53 @@ void decodePixel(P &p, typename kernel::GPUFormatTraits<G>::VectorType v) {
     decodeChannel<G, kernel::Channel::B>(p, v.z);
     decodeChannel<G, kernel::Channel::A>(p, v.w);
 }
+namespace detail {
+template <kernel::ImageFormat G, class P>
+void decodeImageGeneric(P *output, unsigned char const *input, std::size_t count) {
+    using F = kernel::GPUFormatTraits<G>;
+    for (std::size_t i = 0; i < count; ++i)
+        decodePixel<G>(output[i], F::load(input + i * F::bytes));
+}
+template <kernel::ImageFormat G, class P>
+void decodeImagePixels(P *output, unsigned char const *input, std::size_t count) {
+    decodeImageGeneric<G>(output, input, count);
+}
+template <kernel::ImageFormat G, class T, kernel::ChannelOrder O, kernel::NumberKind K>
+void decodeImagePixels(kernel::Pixel<T, O, K> *output, unsigned char const *input,
+                       std::size_t count) {
+    using F = kernel::GPUFormatTraits<G>;
+    using P = kernel::Pixel<T, O, K>;
+    // Only these encodings round-trip every raw code unchanged. SNorm's minimum
+    // value and floating-point special values must retain the generic conversion.
+    if constexpr (std::is_same_v<T, typename F::Storage> && K == F::kind &&
+                  kernel::channelCount(O) == F::channels &&
+                  (K == kernel::NumberKind::UNorm || K == kernel::NumberKind::UInt ||
+                   K == kernel::NumberKind::SInt)) {
+        if (!count)
+            return;
+        static_assert(std::is_trivially_copyable_v<P> && sizeof(P) == F::bytes);
+        if constexpr (O != kernel::ChannelOrder::BGRA && O != kernel::ChannelOrder::BGR) {
+            std::memcpy(output, input, count * sizeof(P));
+        } else {
+            // Byte accesses preserve signed representations and input alignment,
+            // while keeping the channel shuffle visible to the vectorizer.
+            auto destination = reinterpret_cast<unsigned char *>(output);
+            for (std::size_t i = 0; i < count; ++i) {
+                auto offset = i * F::bytes;
+                for (std::size_t b = 0; b < sizeof(T); ++b) {
+                    destination[offset + b] = input[offset + 2 * sizeof(T) + b];
+                    destination[offset + sizeof(T) + b] = input[offset + sizeof(T) + b];
+                    destination[offset + 2 * sizeof(T) + b] = input[offset + b];
+                    if constexpr (F::channels == 4)
+                        destination[offset + 3 * sizeof(T) + b] = input[offset + 3 * sizeof(T) + b];
+                }
+            }
+        }
+    } else {
+        decodeImageGeneric<G>(output, input, count);
+    }
+}
+} // namespace detail
 template <class K> struct KernelTraits; // Generated for each annotated kernel.
 struct BuiltinScope {
     kernel::uvec3 global = kernel::gl_GlobalInvocationID, local = kernel::gl_LocalInvocationID,
@@ -341,9 +388,7 @@ struct Backend {
         if (!words)
             return words.error();
         auto const *bytes = reinterpret_cast<unsigned char const *>(words.value().data());
-        for (std::size_t i = 0; i < resource->size(); ++i)
-            decodePixel<G>(resource->data()[i], kernel::GPUFormatTraits<G>::load(
-                                                    bytes + i * kernel::GPUFormatTraits<G>::bytes));
+        detail::decodeImagePixels<G>(resource->data(), bytes, resource->size());
         return {};
     }
     template <class T, Word S>

@@ -9,7 +9,7 @@ endif()
 
 option(LUTILS_BUILD_TESTS "Build lutils tests" ${lutils_top_level})
 option(LUTILS_BUILD_EXAMPLES "Build lutils examples" ${lutils_top_level})
-option(LUTILS_BUILD_BENCHMARKS "Build available image conversion benchmarks" OFF)
+option(LUTILS_BUILD_BENCHMARKS "Build available image and compute benchmarks" OFF)
 option(LUTILS_INSTALL "Install the CMake SDK and developer tools" ${lutils_top_level})
 option(LUTILS_ENABLE_SANITIZERS "Instrument lutils tests and examples" OFF)
 option(LUTILS_ENABLE_TSAN "Check CPU execution with ThreadSanitizer" OFF)
@@ -94,7 +94,8 @@ if(LUTILS_BUILD_IMAGE_OPS)
     add_subdirectory(image/ops)
 endif()
 
-if(LUTILS_BUILD_IMAGE_OPS AND (LUTILS_BUILD_TESTS OR LUTILS_BUILD_EXAMPLES))
+if(LUTILS_BUILD_IMAGE_OPS AND (LUTILS_BUILD_TESTS OR LUTILS_BUILD_EXAMPLES OR
+    (LUTILS_BUILD_BENCHMARKS AND LUTILS_ENABLE_OPENGL AND NOT ANDROID)))
     add_subdirectory(examples/kernels)
 endif()
 

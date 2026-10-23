@@ -16,7 +16,7 @@ struct ReadResult {
     ReadbackToken token;
     GLuint buffer = 0;
     std::size_t bytes = 0;
-    WordSnapshot snapshot;
+    std::shared_ptr<std::vector<Word>> snapshot;
 };
 struct Submission final : Completion {
     explicit Submission(std::shared_ptr<Context> context) : context(std::move(context)) {}
@@ -100,7 +100,22 @@ struct Submission final : Completion {
         auto checked = wait();
         if (!checked)
             return checked.error();
-        return found->snapshot;
+        return WordSnapshot{found->snapshot};
+    }
+    Result<std::vector<Word>> takeReadback(ReadbackToken const &token) {
+        auto found = std::find_if(results.begin(), results.end(),
+                                  [&](auto const &r) { return r.token == token; });
+        if (found == results.end())
+            return Error{ErrorCode::InvalidArgument,
+                         "readback token does not belong to this submission"};
+        auto checked = wait();
+        if (!checked)
+            return checked.error();
+        // Synchronous download owns its submission and never exposes the snapshot.
+        // Preserve immutable snapshots if a future caller has shared this storage.
+        if (found->snapshot.use_count() == 1)
+            return std::move(*found->snapshot);
+        return *found->snapshot;
     }
     std::shared_ptr<Context> context;
     std::vector<Command> commands;
@@ -274,9 +289,8 @@ struct GlDevice final : Device {
         auto result = submit(list);
         if (!result)
             return result.error();
-        auto data = result.value()->readback(token.value());
-        return data ? Result<std::vector<Word>>{*data.value()}
-                    : Result<std::vector<Word>>{data.error()};
+        // submit() above constructs a Submission belonging to this device.
+        return std::static_pointer_cast<Submission>(result.value())->takeReadback(token.value());
     }
     Storage *get(BufferHandle const &buffer) const {
         auto result = dynamic_cast<Storage *>(buffer.get());
