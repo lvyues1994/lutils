@@ -19,10 +19,12 @@ foreach(shader IN ITEMS OFF ON)
     run("${CMAKE_COMMAND}" -S "${ROOT}/tests/downstream" -B "${consumer}" -G Ninja
         "-DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN}" "-DANDROID_ABI=${ABI}" "-DANDROID_PLATFORM=${PLATFORM}"
         -DANDROID_STL=c++_static "-Dlutils_DIR=${WORK}/moved sdk/lib/cmake/lutils"
-        "-DWITH_OPS=${FULL}" "-DWITH_GPU=${GPU}" "-DWITH_SHADER=${shader}"
+        "-DWITH_OPS=${FULL}" "-DWITH_GPU=${GPU}" "-DWITH_OPENGL=${GL}" "-DWITH_SHADER=${shader}"
         "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
     run("${CMAKE_COMMAND}" --build "${consumer}" -j2)
-    run(${EMULATOR} "${consumer}/consumer")
+    if(EMULATOR)
+        run(${EMULATOR} "${consumer}/consumer")
+    endif()
 endforeach()
 execute_process(COMMAND "${CMAKE_COMMAND}" -S "${ROOT}/tests/downstream" -B "${WORK}/invalid-tool" -G Ninja
     "-DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN}" "-DANDROID_ABI=${ABI}" "-DANDROID_PLATFORM=${PLATFORM}"

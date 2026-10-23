@@ -1,4 +1,5 @@
 #pragma once
+#include <lutils/compute/LinuxDmaBufImage.hpp>
 #include <lutils/image/ImageResource.hpp>
 
 namespace lutils::image {
@@ -10,4 +11,8 @@ struct DmaBufImageDesc {
     std::optional<std::uint64_t> modifier;
 };
 Result<ImageResource> importDmaBufImage(DmaBufImageDesc const &description);
+// Preserves DRM metadata for EGL/native-image import. Linear CPU access remains
+// available.
+Result<ImageResource> importNativeDmaBufImage(compute::DmaBufNativeImageDesc description,
+                                              ColorSpec color = {}, Rectangle visible = {});
 } // namespace lutils::image

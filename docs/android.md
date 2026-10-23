@@ -1,7 +1,8 @@
 # Android / NDK r28
 
 使用 C++17 与 NDK r28c（28.2.13676358）。预设目标为 arm64-v8a、API 29，测试程序静态链接 libc++。
-基础 image、CPU compute 和 Vulkan compute 均在 Android 编译；kernelc、glslang 和 spirv-val 在 PC 上运行。
+基础 image、CPU、Vulkan 和 GLES compute 均可在 Android 编译；kernelc、glslang 和 spirv-val 在 PC 上运行。
+GLES 的独立预设、扩展条件和外部内存接入见 [OpenGL 后端](opengl.md)。
 kernelc 解析时使用 NDK target、sysroot 和 libc++ 头文件，因此 Android 条件编译与目标代码一致。
 
 ## 构建与设备测试
@@ -33,7 +34,7 @@ ctest --preset android-compute --output-on-failure
 运行器需要 PC 上的 adb、uv 和 Python 3，使用已安装的 Python，不联网安装依赖。
 每项运行测试推送到独立的 `/data/local/tmp/lutils-*` 目录，完成后清理并保留退出码。
 编译拒绝测试使用 NDK；kernelc 自身测试在 PC 运行。`downstream.android` 安装并移动 SDK，
-分别编译预编译算子消费者和使用主机 kernelc 的消费者，再到设备运行。
+分别编译预编译算子消费者和使用主机 kernelc 的消费者；启用设备测试时再到设备运行。
 
 ## AHardwareBuffer 线性共享内存
 

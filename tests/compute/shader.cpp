@@ -106,10 +106,27 @@ void memberNames(Backend &backend) {
         check(output[i].m0 == 13u);
     }
 }
-template <ImageFormat F, class K> void formatCopy(Backend &backend) {
+template <ImageFormat F, class K> void formatCopy(Backend &backend, bool es) {
     using Traits = GPUFormatTraits<F>;
     constexpr Word count = 9;
-    ImageDesc desc{F, 1, {count, 1, 1}};
+    ImageDesc desc{F, 2, {count, 1, 1}};
+    if (es) {
+        auto source = KernelTraits<K>::source();
+        auto target = std::find_if(source.glsl.begin(), source.glsl.end(), [](auto const &s) {
+            return s.target == GlslTarget::OpenGles31;
+        });
+        bool supported = F == ImageFormat::RGBA32F || F == ImageFormat::RGBA16F || F == ImageFormat::R32F ||
+            F == ImageFormat::RGBA32UI || F == ImageFormat::RGBA16UI || F == ImageFormat::RGBA8UI || F == ImageFormat::R32UI ||
+            F == ImageFormat::RGBA32I || F == ImageFormat::RGBA16I || F == ImageFormat::RGBA8I || F == ImageFormat::R32I ||
+            F == ImageFormat::RGBA8 || F == ImageFormat::RGBA8Snorm;
+        check(target != source.glsl.end());
+        if (!supported) {
+            auto rejected = backend.device().createKernel(std::move(source));
+            check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
+            return;
+        }
+        check(target->unsupportedReason.empty() && !target->text.empty());
+    }
     auto input = require(backend.device().createImage(desc));
     auto output = require(backend.device().createImage(desc));
     std::vector<Word> words(require(imageWordCount(desc)), 0);
@@ -131,16 +148,17 @@ template <ImageFormat F, class K> void formatCopy(Backend &backend) {
     auto token = require(commands.readback(output));
     auto done = require(backend.device().submit(commands));
     auto actual = require(done->readback(token));
-    // Exact encoded values must survive a load/store roundtrip, including normalized values.
+    // Exact encoded values must survive a load/store roundtrip, including
+    // normalized values.
     check(*actual == words);
 }
-void allFormats(Backend &backend) {
+void allFormats(Backend &backend, bool es) {
 #define LUTILS_TEST_FORMAT(N, G, T, K, C, V)                                                       \
-    formatCopy<ImageFormat::N, format_test::Copy##N>(backend);
+    formatCopy<ImageFormat::N, format_test::Copy##N>(backend, es);
     LUTILS_IMAGE_FORMATS(LUTILS_TEST_FORMAT)
 #undef LUTILS_TEST_FORMAT
 }
-void dimensions(Backend &backend) {
+void dimensions(Backend &backend, bool es) {
     BufferResource<kernel::cpu::R16UI, Dim::D3> pixels{{5, 3, 3}};
     require(backend.uploadImage<kernel::gpu::R32UI>(&pixels));
     test_pdf::Volume k;
@@ -151,6 +169,12 @@ void dimensions(Backend &backend) {
         for (int y = 0; y < 3; ++y)
             for (int x = 0; x < 5; ++x)
                 check(pixels[{x, y, z}].get<Channel::R>() == x + 10 * y + 100 * z);
+    if (es) {
+        auto rejected = backend.device().createKernel(KernelTraits<test_pdf::Line>::source());
+        check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
+        check(!backend.device().createImage({kernel::gpu::RGBA8, 1, {9, 1, 1}}));
+        return;
+    }
     BufferResource<kernel::cpu::RG16I> line{9};
     require(backend.uploadImage<kernel::gpu::RG16I>(&line));
     test_pdf::Line l;
@@ -231,7 +255,8 @@ std::vector<unsigned char> raytrace(Backend &backend) {
     return result;
 }
 void formats(Backend &backend) {
-    // Includes normalized quantization, missing alpha, float special values and trailing padding.
+    // Includes normalized quantization, missing alpha, float special values and
+    // trailing padding.
     BufferResource<kernel::cpu::R8UI> external{3};
     external[0] = kernel::cpu::R8UI{128};
     require(backend.uploadImage<kernel::gpu::RGBA8>(&external));
@@ -323,7 +348,7 @@ void samplingAndCopy(Backend &backend) {
     bad.bindings[0] = Access::Write;
     check(!device.createKernel(bad));
 }
-void residentBindings(Backend &backend) {
+void residentBindings(Backend &backend, bool es) {
     auto &device = backend.device();
     BufferResource<float> host{3};
     host[0] = 1; host[1] = 2; host[2] = 3;
@@ -391,6 +416,8 @@ void residentBindings(Backend &backend) {
     check(!device.submit(invalidDevice));
     check(require(device.download(destination)) == std::vector<Word>(3, 0));
 
+    if (es)
+        return; // Dedicated dimensions() case verifies the GLES 1D rejection.
     test_pdf::Line line;
     auto validImage = require(device.createImage({kernel::gpu::RG16I, 1, {3, 1, 1}}));
     line.image.attach(validImage);
@@ -410,12 +437,17 @@ void residentBindings(Backend &backend) {
     line.image.attach(nullptr);
     check(!backend.execute(line, {3, 1, 1}));
 }
+#include "TestDevice.hpp"
 int main(int argc, char **argv) {
     try {
         auto device = createCpuDevice();
+        auto selected = test_device::name(argc, argv);
+        bool es = selected == "gles";
+        if (test_device::gl(selected))
+            device = test_device::createGl(argc, argv);
 #ifdef LUTILS_TEST_VULKAN
         auto validation = std::make_shared<ValidationReport>();
-        if (argc > 1) {
+        if (selected == "vulkan") {
             VulkanOptions options;
             options.enableValidation = argc > 2;
             options.validationReport = validation;
@@ -429,7 +461,7 @@ int main(int argc, char **argv) {
 #endif
         Backend backend{require(std::move(device))};
         memberNames(backend);
-        residentBindings(backend);
+        residentBindings(backend, es);
         samplingAndCopy(backend);
         BufferResource<float> a{21}, b{21}, c{21};
         for (int i = 0; i < 21; ++i) {
@@ -459,12 +491,19 @@ int main(int argc, char **argv) {
             auto rejected =
                 backend.device().createKernel(KernelTraits<layout_test::Layout>::source());
             check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
-            std::cout << "Float64 unavailable: checked rejection; continuing remaining shaders\n";
+            std::cout << "Float64 unavailable: checked rejection; continuing "
+                         "remaining shaders\n";
         }
-        allFormats(backend);
-        dimensions(backend);
-        life(backend);
-        formats(backend);
+        allFormats(backend, es);
+        dimensions(backend, es);
+        if (es) {
+            auto rejected =
+                backend.device().createKernel(KernelTraits<test_pdf::GameOfLife>::source());
+            check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
+        } else {
+            life(backend);
+            formats(backend);
+        }
         auto actual = raytrace(backend);
         Backend reference{require(createCpuDevice())};
         auto expected = raytrace(reference);

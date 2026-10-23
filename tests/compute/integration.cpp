@@ -328,9 +328,13 @@ void genericTransfer(co::Device &device) {
     auto huge = description(UINT32_MAX - 1, UINT32_MAX, im::rgba8());
     CHECK(!im::deviceLayout(huge));
 }
+#include "TestDevice.hpp"
 int main(int argc, char **argv) {
+    auto selected = test_device::name(argc, argv);
     bool vulkan = argc > 1 && std::string{argv[1]} == "vulkan";
     std::unique_ptr<co::Device> device;
+    if (test_device::gl(selected))
+        device = take(test_device::createGl(argc, argv));
 #ifdef LUTILS_TEST_VULKAN
     co::VulkanOptions options;
     options.validationReport = std::make_shared<co::ValidationReport>();
@@ -358,7 +362,7 @@ int main(int argc, char **argv) {
         device = take(co::createCpuDevice());
     std::cout << device->info().name << '\n';
     runtime(*device);
-    workgroups(*device, vulkan);
+    workgroups(*device, selected != "cpu");
     largeInvocationIndex(*device);
     for (bool uyvy : {false, true}) {
         conversions(*device, 2, 1, uyvy);

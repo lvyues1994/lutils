@@ -55,8 +55,6 @@ function(lutils_check_kernel_profile target)
 endfunction()
 
 function(_lutils_add_kernel_impl target kind)
-    find_program(LUTILS_GLSLANG glslangValidator REQUIRED NO_CMAKE_FIND_ROOT_PATH)
-    find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED NO_CMAKE_FIND_ROOT_PATH)
     if(TARGET lutils::kernelc)
         set(kernelc lutils::kernelc)
     else()
@@ -65,7 +63,35 @@ function(_lutils_add_kernel_impl target kind)
     if(CMAKE_CONFIGURATION_TYPES)
         message(FATAL_ERROR "Kernel generation currently requires a single-configuration generator such as Ninja")
     endif()
-    cmake_parse_arguments(K "OBJECT" "NAME;SOURCE;ENTRY;LOCAL_SIZE_X" "INCLUDE_DIRS;DEFINITIONS;DEPENDS" ${ARGN})
+    cmake_parse_arguments(K "OBJECT" "NAME;SOURCE;ENTRY;LOCAL_SIZE_X" "INCLUDE_DIRS;DEFINITIONS;DEPENDS;TARGETS" ${ARGN})
+    if(NOT K_TARGETS)
+        if(DEFINED LUTILS_SHADER_TARGETS)
+            set(K_TARGETS ${LUTILS_SHADER_TARGETS})
+        elseif(TARGET lutils::compute_opengl)
+            set(K_TARGETS opengl gles)
+            if(ANDROID)
+                set(K_TARGETS gles)
+            endif()
+            if(TARGET lutils::compute_vulkan)
+                list(APPEND K_TARGETS vulkan)
+            endif()
+        else()
+            set(K_TARGETS vulkan)
+        endif()
+    endif()
+    if(NOT K_TARGETS)
+        message(FATAL_ERROR "Shader TARGETS must not be empty; use cpu for a CPU-only artifact")
+    endif()
+    foreach(dialect IN LISTS K_TARGETS)
+        if(NOT dialect MATCHES "^(cpu|vulkan|opengl|gles)$")
+            message(FATAL_ERROR "Unknown shader target: ${dialect}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES K_TARGETS)
+    if(vulkan IN_LIST K_TARGETS OR opengl IN_LIST K_TARGETS OR gles IN_LIST K_TARGETS)
+        find_program(LUTILS_GLSLANG glslangValidator REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    endif()
+    list(JOIN K_TARGETS "," target_argument)
     if(K_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "Missing kernel argument values: ${K_KEYWORDS_MISSING_VALUES}")
     endif()
@@ -115,18 +141,39 @@ function(_lutils_add_kernel_impl target kind)
     elseif(CMAKE_CROSSCOMPILING)
         message(FATAL_ERROR "Kernel preprocessing has no profile for this cross-compilation toolchain")
     endif()
-    add_custom_command(OUTPUT "${base}.hpp" "${base}.cpp" "${base}.comp" "${base}.spv" "${base}.spv.hpp"
+    set(shader_outputs "${base}.hpp" "${base}.cpp" "${base}.comp")
+    set(shader_commands)
+    if(vulkan IN_LIST K_TARGETS)
+        find_program(LUTILS_SPIRV_VAL spirv-val REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+        list(APPEND shader_outputs "${base}.spv" "${base}.spv.hpp")
+        list(APPEND shader_commands
+            COMMAND "${LUTILS_GLSLANG}" -V --target-env vulkan1.1 -o "${base}.spv" "${base}.comp"
+            COMMAND "${LUTILS_SPIRV_VAL}" --target-env vulkan1.1 "${base}.spv"
+            COMMAND "$<TARGET_FILE:${kernelc}>" --embed "${base}.spv" "${base}.spv.hpp" "${K_NAME}")
+    endif()
+    foreach(dialect IN ITEMS opengl gles)
+        if(dialect IN_LIST K_TARGETS)
+            set(extension gl)
+            if(dialect STREQUAL "gles")
+                set(extension gles)
+            endif()
+            list(APPEND shader_outputs "${base}.${extension}.comp")
+            list(APPEND shader_commands COMMAND ${CMAKE_COMMAND}
+                "-DSHADER=${base}.${extension}.comp" "-DVALIDATOR=${LUTILS_GLSLANG}"
+                -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/LutilsValidateGlsl.cmake")
+        endif()
+    endforeach()
+    add_custom_command(OUTPUT ${shader_outputs}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
         COMMAND "$<TARGET_FILE:${kernelc}>" "${source}" --entry=${K_ENTRY} --name=${K_NAME} --output=${base}
-            --local-size-x=${K_LOCAL_SIZE_X} --expect-kind=${kind}
+            --local-size-x=${K_LOCAL_SIZE_X} --expect-kind=${kind} --targets=${target_argument}
             -- -std=c++17 -Werror=macro-redefined ${target_profile} "-I${sdk_include}"
             "$<$<BOOL:${includes}>:-I$<JOIN:${includes},;-I>>"
             "$<$<BOOL:${definitions}>:-D$<JOIN:${definitions},;-D>>"
             ${global_macros} "$<FILTER:${options},INCLUDE,^-D.|^-U.>"
-        COMMAND "${LUTILS_GLSLANG}" -V --target-env vulkan1.1 -o "${base}.spv" "${base}.comp"
-        COMMAND "${LUTILS_SPIRV_VAL}" --target-env vulkan1.1 "${base}.spv"
-        COMMAND "$<TARGET_FILE:${kernelc}>" --embed "${base}.spv" "${base}.spv.hpp" "${K_NAME}"
+        ${shader_commands}
         DEPENDS ${kernelc} "${source}" "${sdk_include}/lutils/compute/Kernel.hpp" ${K_DEPENDS}
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/LutilsValidateGlsl.cmake"
         DEPFILE "${base}.d"
         COMMAND_EXPAND_LISTS VERBATIM)
     if(K_OBJECT)

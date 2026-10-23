@@ -1,4 +1,5 @@
 #include "portable_math.hpp"
+#include "TestDevice.hpp"
 #include "integer_sqrt.hpp"
 #include <iostream>
 #include <stdexcept>
@@ -16,11 +17,14 @@ void take(lutils::Result<void> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }
-int main(int argc, char **) {
+int main(int argc, char **argv) {
     try {
         auto device = take(createCpuDevice());
+        auto selected = test_device::name(argc, argv);
+        if (test_device::gl(selected))
+            device = take(test_device::createGl(argc, argv));
 #ifdef LUTILS_TEST_VULKAN
-        if (argc > 1)
+        if (selected == "vulkan")
             device = take(createVulkanDevice({}));
 #else
         (void)argc;
@@ -43,7 +47,8 @@ int main(int argc, char **) {
             if (std::abs(output[i] - expected) > 0.00002f)
                 throw std::runtime_error("portable scalar math mismatch");
         }
-        // C++ std::sqrt(int) returns double. Verify its generated CPU path unconditionally.
+        // C++ std::sqrt(int) returns double. Verify its generated CPU path
+        // unconditionally.
         Backend cpu{take(createCpuDevice())};
         BufferResource<double> result{1};
         take(cpu.uploadBuffer(&result));

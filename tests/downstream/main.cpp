@@ -15,6 +15,9 @@
 #ifdef WITH_SHADER
 #include <consumer_shader.hpp>
 #endif
+#ifdef WITH_OPENGL
+#include <lutils/compute/OpenGl.hpp>
+#endif
 #ifdef WITH_OPS
 #include <lutils/image/Conversion.hpp>
 #endif
@@ -57,6 +60,9 @@ int main() {
     auto device = take(co::createCpuDevice());
 #ifdef WITH_GPU
     device = take(co::createVulkanDevice());
+#endif
+#ifdef WITH_OPENGL
+    device = take(co::createOpenGlDevice());
 #endif
     im::FrameDesc desc{2,
                        2,

@@ -1,3 +1,4 @@
+#include "TestDevice.hpp"
 #include <half_arithmetic.hpp>
 #include <half_shared.hpp>
 #include <iostream>
@@ -33,7 +34,18 @@ int main(int argc, char **argv) {
                 halfMultiply |= op == 133u;
             }
         }
-        check(halfType && halfAdd && halfMultiply);
+        if (!source.spirv.empty())
+            check(halfType && halfAdd && halfMultiply);
+        auto selected = test_device::name(argc, argv);
+        if (test_device::gl(selected)) {
+            auto gl = take(test_device::createGl(argc, argv));
+            for (auto const &kernel : {source, KernelTraits<half_test::Shared>::source()}) {
+                auto rejected = gl->createKernel(kernel);
+                check(!rejected && rejected.error().code == lutils::ErrorCode::Unsupported);
+            }
+            std::cout << "GL native FP16 rejection passed\n";
+            return 0;
+        }
         auto device = take(createCpuDevice());
 #ifdef LUTILS_TEST_VULKAN
         VulkanOptions options;
@@ -50,7 +62,7 @@ int main(int argc, char **argv) {
 #else
         (void)argv;
 #endif
-        if (argc > 1) {
+        if (selected == "vulkan") {
 #ifdef LUTILS_TEST_VULKAN
             VulkanOptions disabled = options;
             disabled.enableFloat16 = false;
@@ -104,7 +116,8 @@ int main(int argc, char **argv) {
             take(backend.downloadBuffer(&sharedOutput));
             for (int i = 0; i < 8; ++i)
                 check(sharedOutput[i] == half(3 - i % 4));
-            std::cout << "FP16 arithmetic, odd buffers, nested layouts, uniforms and shared "
+            std::cout << "FP16 arithmetic, odd buffers, nested layouts, uniforms and "
+                         "shared "
                          "storage passed\n";
         }
 #ifdef LUTILS_TEST_VULKAN

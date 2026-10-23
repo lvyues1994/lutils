@@ -4,7 +4,8 @@
 
 Linux 首发，公共 C++17 API 为 Windows 保留可移植的数据与生命周期契约。
 构建期使用 Clang 18 AST 校验受限 C++17 内核，提取类型、布局与资源信息，再生成 GLSL；
-glslang 生成 Vulkan 1.1 SPIR-V，SPIR-V Tools 校验。运行库不链接 Clang。
+Vulkan 方言由 glslang 生成 Vulkan 1.1 SPIR-V，SPIR-V Tools 校验；GL/GLES 方言由驱动编译。
+运行库不链接 Clang。目标生成、EGL 与外部同步见 [OpenGL 后端](opengl.md)。
 CPU 包装和 Shader 由同一次构建生成，原算法仅维护一份 C++。
 CPU 包装为独立编译单元。类内核的公共生成头包含原始内核头和 KernelTraits；
 lutils_add_shader 将预处理配置传给两条编译路径及调用方。旧函数接口 lutils_add_kernel
@@ -20,7 +21,7 @@ Release 的 NDEBUG）及常规 -D/-U 按编译顺序同步。语言条件表达�
 | compute/kernel | half、向量、Pixel、bindings、Uniform、SharedArray、内建值 | C++17 标准库 |
 | tools/kernelc | AST 校验、std430 布局、GLSL 与 CPU 包装生成 | Clang/LLVM，仅构建期 |
 | compute/runtime | 类型化 Backend、主机资源、codec、命令与设备接口 | core、kernel、Threads |
-| compute/backends | CPU 线程池/工作组执行和 Vulkan 单计算队列 | runtime，Vulkan 后端私有依赖 loader |
+| compute/backends | CPU 线程池/工作组、Vulkan 计算队列、GL/EGL 工作线程 | runtime，各 GPU 后端私有依赖系统 loader |
 | image/memory | 线性与原生图像资源、CPU 映射、dma-buf/AHB/AImage 接入 | image、runtime |
 | image/ops | 转换计划、设备帧、打包传输和图像内核 | image/memory、runtime、生成内核 |
 

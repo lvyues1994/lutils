@@ -13,7 +13,7 @@ set(source "${WORK}/source")
 set(common -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_COMPILER=${COMPILER}")
 if(MODE STREQUAL "source")
     run("${CMAKE_COMMAND}" -S "${source}" -B "${WORK}/consumer" ${common}
-        "-DSOURCE_ROOT=${ROOT}" -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS}
+        "-DSOURCE_ROOT=${ROOT}" -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS} -DWITH_OPENGL=${GL}
         "-DLLVM_DIR=${LLVM_DIR}" "-DLUTILS_CLANG_INCLUDE_DIR=${CLANG_INCLUDE}"
         "-DLUTILS_CLANG_CPP_LIBRARY=${CLANG_LIBRARY}"
         "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
@@ -52,7 +52,7 @@ else()
     endif()
     run("${CMAKE_COMMAND}" -S "${source}" -B "${WORK}/consumer" ${common}
         "-DCMAKE_PREFIX_PATH=${prefix}" -DWITH_SHADER=${TOOLS} -DWITH_OPS=${OPS}
-        -DWITH_GPU=${GPU} "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
+        -DWITH_GPU=${GPU} -DWITH_OPENGL=${GL} "-DLUTILS_HOST_KERNELC=${HOST_KERNELC}" "-DLUTILS_GLSLANG=${GLSLANG}" "-DLUTILS_SPIRV_VAL=${SPIRV_VAL}")
 endif()
 run("${CMAKE_COMMAND}" --build "${WORK}/consumer" -j2)
 run("${WORK}/consumer/consumer")

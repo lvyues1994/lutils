@@ -1,3 +1,7 @@
+set(DIALECT vulkan)
+if(GL)
+    set(DIALECT opengl)
+endif()
 set(source "${WORK}/source")
 set(binary "${WORK}/build")
 file(MAKE_DIRECTORY "${source}/shader/private headers")

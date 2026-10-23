@@ -15,10 +15,12 @@ sudo apt-get install ninja-build clang-18 llvm-18-dev libclang-18-dev libclang-c
 | clang-sanitize | 基础库 ASan/UBSan |
 | compute-cpu | kernelc、内置图像算子和 CPU 测试 |
 | compute-release | 完整计算、Vulkan、示例和性能基准 |
+| compute-opengl | Linux OpenGL/GLES 后端及两种方言的测试 |
 | compute-sanitize | 完整计算 ASan/UBSan，安装关闭 |
 | cpu-tsan | 线程池/工作组执行的 ThreadSanitizer 测试 |
 | host-kernel-tools | PC 上运行的 kernelc；用于 Android 交叉编译 |
 | android-arm64 / android-compute | NDK r28 基础库 / 完整计算；见 [Android 接入](android.md) |
+| android-opengl | NDK r28 GLES 后端、生成内核与离线 SDK 验证 |
 | sdk-release | 完整 SDK；测试、示例、基准可执行程序关闭 |
 
 各预设都有同名 build preset；除 sdk-release、host-kernel-tools 外也有 test preset。
@@ -73,7 +75,8 @@ SIMD 基础操作、调度及 CPU 图像转换的接入见 [SIMD 模块](simd.md
 | 组件 | 目标与作用 |
 | --- | --- |
 | vulkan | lutils::compute_vulkan；查找系统 Vulkan |
-| image_ops | lutils::image_ops；预编译图像转换、裁剪与填充，支持 CPU 或另选 Vulkan |
+| opengl | lutils::compute_opengl；系统 EGL，见 [OpenGL 接入](opengl.md) |
+| image_ops | lutils::image_ops；预编译图像转换、裁剪与填充，支持 CPU、Vulkan 或 OpenGL/GLES |
 | kernelc | lutils::kernelc 和 lutils_add_shader/lutils_add_kernel；构建新内核 |
 
 ```cmake
@@ -82,7 +85,7 @@ lutils_add_shader(adder NAME typed_add SOURCE Adder.hpp ENTRY demo::FloatAdder)
 target_link_libraries(app PRIVATE adder lutils::compute_cpu lutils::compute_vulkan)
 ```
 
-glslangValidator 和 spirv-val 在调用内核构建函数时才查找。
+glslangValidator 在生成 GPU 方言时查找；spirv-val 仅在生成 Vulkan 方言时查找。
 缺失的 REQUIRED 组件让配置失败；OPTIONAL_COMPONENTS 不会强制引入 Vulkan。
 包版本按同一 minor 版本匹配。0.2 改变了 CPU dispatch 接口与类型化字节布局；升级时重新生成内核包装并重编下游，
 不混用旧版本静态库或生成文件。

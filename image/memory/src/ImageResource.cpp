@@ -307,6 +307,12 @@ Result<ImageResource> ImageResource::native(std::shared_ptr<compute::NativeImage
     return result;
 }
 bool ImageResource::aliases(ImageResource const &other) const noexcept {
+    if (native_)
+        for (auto const &object : other.objects_)
+            if (native_->aliasesMemory(*object)) return true;
+    if (other.native_)
+        for (auto const &object : objects_)
+            if (other.native_->aliasesMemory(*object)) return true;
     if (native_ && other.native_)
         return native_ == other.native_ || native_->aliases(*other.native_) ||
                other.native_->aliases(*native_);

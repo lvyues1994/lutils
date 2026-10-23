@@ -1,4 +1,5 @@
 #include "../regions/Fixture.hpp"
+#include "TestDevice.hpp"
 #include <lutils/image/DeviceRegion.hpp>
 #ifdef LUTILS_TEST_VULKAN
 #include <lutils/compute/Vulkan.hpp>
@@ -7,6 +8,9 @@
 using namespace regions_test;
 int main(int argc, char **argv) {
     std::unique_ptr<co::Device> device;
+    auto selected = test_device::name(argc, argv);
+    if (test_device::gl(selected))
+        device = take(test_device::createGl(argc, argv));
 #ifdef LUTILS_TEST_VULKAN
     auto statistics = std::make_shared<co::VulkanStatistics>();
     auto report = std::make_shared<co::ValidationReport>();

@@ -201,7 +201,19 @@ void reuse(co::VulkanOptions options) {
     CHECK(options.statistics->readbackVectorsCreated.load() == 3);
 }
 #endif
+#include "TestDevice.hpp"
 int main(int argc, char **argv) {
+    auto selected = test_device::name(argc, argv);
+    if (test_device::gl(selected)) {
+        for (auto depth : {1u, 4u}) {
+            auto device = take(test_device::createGl(argc, argv, depth));
+            commands(*device);
+            imageTransfer(*device);
+            deviceLifetime(std::move(device));
+        }
+        std::cout << "GL ordered transfers, snapshots and lifetime passed\n";
+        return 0;
+    }
     bool vulkan = argc > 1 && std::string{argv[1]} == "vulkan";
 #ifdef LUTILS_TEST_VULKAN
     co::VulkanOptions options;

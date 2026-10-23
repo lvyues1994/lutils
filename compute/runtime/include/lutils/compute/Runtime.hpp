@@ -55,6 +55,13 @@ struct CpuExecution {
 };
 using CpuDispatch = void (*)(Extent3, std::vector<CpuBuffer> const &, std::vector<Word> const &,
                              CpuExecution &);
+enum class GlslTarget : std::uint8_t { OpenGl43, OpenGles31 };
+struct GlslSource {
+    GlslTarget target = GlslTarget::OpenGl43;
+    std::string text;
+    // A requested target can be unavailable without disabling CPU or Vulkan.
+    std::string unsupportedReason;
+};
 struct KernelSource {
     std::string name;
     std::vector<Access> bindings;
@@ -67,6 +74,7 @@ struct KernelSource {
     CpuDispatch cpuDispatch = nullptr;
     std::size_t sharedMemoryBytes = 0;
     bool requiresFullWorkgroups = false;
+    std::vector<GlslSource> glsl;
 };
 struct ComputeCapabilities {
     bool float16 = false;
@@ -180,8 +188,8 @@ struct Device {
     virtual Result<KernelHandle> createKernel(KernelSource source) = 0;
     virtual Result<void> upload(BufferHandle const &buffer, std::vector<Word> const &words) = 0;
     virtual Result<std::vector<Word>> download(BufferHandle const &buffer) = 0;
-    // Submission preserves command order. CPU executes synchronously; Vulkan may
-    // wait for an older submission when its configured in-flight limit is reached.
+    // Submission preserves command order. CPU executes synchronously; GPU backends
+    // may wait for older submissions when the configured in-flight limit is reached.
     virtual Result<std::shared_ptr<Completion>> submit(CommandList const &commands) = 0;
 };
 Result<void> validate(KernelSource const &source);

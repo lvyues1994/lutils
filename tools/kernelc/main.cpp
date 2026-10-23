@@ -35,6 +35,7 @@ llvm::cl::opt<std::string> expectKind{"expect-kind", llvm::cl::init("auto"),
 std::vector<std::pair<std::string, bool>> preprocessingMacros;
 std::string inputPath;
 bool failed = false;
+#include "GlslTarget.hpp"
 
 void checkOutput(std::string const &input, std::string const &output) {
     namespace fs = std::filesystem;
@@ -413,26 +414,41 @@ struct Compiler {
         ir.push_back(std::move(result));
         return id;
     }
-    std::string shader() {
+    void prepare() {
         signature();
         compile(entry, true);
+    }
+    std::string shader(ShaderTarget target = ShaderTarget::Vulkan) {
         std::ostringstream out;
-        out << "#version 450\nlayout(local_size_x=" << localSizeX
+        out << version(target) << "layout(local_size_x=" << localSizeX
             << ",local_size_y=1,local_size_z=1) in;\n";
         for (std::size_t i = 0; i < writes.size(); ++i)
-            out << "layout(set=0,binding=" << i << ",std430) "
-                << (writes[i] ? "writeonly" : "readonly") << " buffer B" << i
+            out << "layout(" << (target == ShaderTarget::Vulkan ? "set=0," : "") << "binding=" << i
+                << ",std430) " << (writes[i] ? "writeonly" : "readonly") << " buffer B" << i
                 << " { uint data[]; } b" << i << ";\n";
-        out << "layout(push_constant,std430) uniform Params {\n";
+        if (target == ShaderTarget::Vulkan)
+            out << "layout(push_constant,std430) uniform Params {\n";
+        else
+            out << packet(fields.size()) << "struct Params {\n";
         for (std::size_t i = 0; i < fields.size(); ++i)
-            out << "layout(offset=" << i * 4 << ") " << scalar(fields[i]->getType()) << " f" << i
-                << ";\n";
-        out << "} p;\n";
+            out << (target == ShaderTarget::Vulkan ? "layout(offset=" + std::to_string(i * 4) + ") "
+                                                   : "")
+                << scalar(fields[i]->getType()) << " f" << i << ";\n";
+        out << (target == ShaderTarget::Vulkan ? "} p;\n" : "}; Params p;\n");
         for (auto const &f : ir) {
-            out << f.type << ' ' << f.name << '(';
+            out << f.type << ' '
+                << (target != ShaderTarget::Vulkan && f.name == "main" ? "kernel_main" : f.name)
+                << '(';
             for (std::size_t i = 0; i < f.parameters.size(); ++i)
                 out << (i ? "," : "") << f.parameters[i].first << ' ' << f.parameters[i].second;
             out << ") " << statement(f.body) << '\n';
+        }
+        if (target != ShaderTarget::Vulkan) {
+            out << "void main() {\n";
+            for (std::size_t i = 0; i < fields.size(); ++i)
+                out << "p.f" << i << '=' << scalarWord(scalar(fields[i]->getType()), i * 4)
+                    << ";\n";
+            out << "kernel_main(); }\n";
         }
         return out.str();
     }
@@ -458,8 +474,9 @@ struct Compiler {
         std::ostringstream out;
         out << "#include " << std::quoted(packageName.getValue() + ".hpp")
             << "\n#include <cstring>\n#include " << std::quoted(inputPath) << "\n";
-        out << "#include " << std::quoted(packageName.getValue() + ".spv.hpp")
-            << "\nnamespace lutils::generated {\n";
+        if (hasTarget("vulkan"))
+            out << "#include " << std::quoted(packageName.getValue() + ".spv.hpp") << "\n";
+        out << "namespace lutils::generated {\n";
         auto paramType = paramRecord->getQualifiedNameAsString();
         out << "std::vector<compute::Word> pack_" << packageName << "(" << packageName
             << "Params const &p) {\nstd::vector<compute::Word> result(" << fields.size() << ");\n";
@@ -473,9 +490,13 @@ struct Compiler {
             << ";\nresult.bindings={";
         for (std::size_t i = 0; i < writes.size(); ++i)
             out << (i ? "," : "") << "compute::Access::" << (writes[i] ? "Write" : "Read");
-        out << "};\nresult.localSize={" << localSizeX << ",1,1};\nresult.spirv=spirv_"
-            << packageName
-            << "();\nresult.cpu=+[](compute::kernel::Invocation id, "
+        out << "};\nresult.localSize={" << localSizeX << ",1,1};\n";
+        if (hasTarget("vulkan"))
+            out << "result.spirv=spirv_" << packageName << "();\n";
+        for (auto dialect : {ShaderTarget::OpenGl, ShaderTarget::Gles})
+            if (hasTarget(dialect == ShaderTarget::OpenGl ? "opengl" : "gles"))
+                glslArtifact(out, "result", dialect, shader(dialect), {});
+        out << "result.cpu=+[](compute::kernel::Invocation id, "
                "std::vector<compute::CpuBuffer> const &b, "
                "std::vector<compute::Word> const &words) "
                "{\n"
@@ -527,14 +548,19 @@ struct Consumer final : ASTConsumer, RecursiveASTVisitor<Consumer> {
                 throw std::runtime_error(
                     "struct kernels require lutils_add_shader (expect-kind=object)");
             if (entry && expectKind == "object")
-                throw std::runtime_error(
-                    "function kernels require lutils_add_kernel (expect-kind=function)");
+                throw std::runtime_error("function kernels require lutils_add_kernel "
+                                         "(expect-kind=function)");
             if (structEntry) {
                 StructCompiler compiler{ctx, structEntry};
+                compiler.prepare();
                 auto glsl = compiler.shader();
                 auto header = compiler.header();
                 auto wrapper = compiler.wrapper();
                 write(outputBase + ".comp", glsl);
+                if (hasTarget("opengl"))
+                    write(outputBase + ".gl.comp", compiler.shader(ShaderTarget::OpenGl));
+                if (hasTarget("gles"))
+                    write(outputBase + ".gles.comp", compiler.shader(ShaderTarget::Gles));
                 write(outputBase + ".hpp", header);
                 write(outputBase + ".cpp", wrapper);
                 return;
@@ -542,9 +568,14 @@ struct Consumer final : ASTConsumer, RecursiveASTVisitor<Consumer> {
             if (!entry)
                 throw std::runtime_error("entry not found: " + entryName.getValue());
             Compiler compiler{ctx, entry};
+            compiler.prepare();
             auto glsl = compiler.shader();
             auto cpp = compiler.wrapper();
             write(outputBase + ".comp", glsl);
+            if (hasTarget("opengl"))
+                write(outputBase + ".gl.comp", compiler.shader(ShaderTarget::OpenGl));
+            if (hasTarget("gles"))
+                write(outputBase + ".gles.comp", compiler.shader(ShaderTarget::Gles));
             write(outputBase + ".hpp", compiler.header());
             write(outputBase + ".cpp", cpp);
         } catch (std::exception const &e) {
@@ -608,9 +639,22 @@ int main(int argc, char **argv) {
             throw std::runtime_error("expect-kind must be auto, function or object");
         if (!localSizeX)
             throw std::runtime_error("local-size-x must be positive");
+        {
+            std::istringstream targets{shaderTargets.getValue()};
+            std::string target;
+            std::set<std::string> seen;
+            while (std::getline(targets, target, ','))
+                if ((target != "cpu" && target != "vulkan" && target != "opengl" &&
+                     target != "gles") ||
+                    !seen.insert(target).second)
+                    throw std::runtime_error(
+                        "targets must contain distinct cpu,vulkan,opengl,gles names");
+            if (seen.empty() || shaderTargets.getValue().back() == ',')
+                throw std::runtime_error("empty shader target");
+        }
         inputPath = options->getSourcePathList().front();
         inputPath = std::filesystem::canonical(inputPath).string();
-        for (auto suffix : {".cpp", ".hpp", ".comp", ".d"})
+        for (auto suffix : {".cpp", ".hpp", ".comp", ".gl.comp", ".gles.comp", ".d"})
             checkOutput(inputPath, outputBase.getValue() + suffix);
         if (packageName.empty() || (packageName.front() >= '0' && packageName.front() <= '9') ||
             packageName.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"

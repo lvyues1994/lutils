@@ -3,8 +3,13 @@
 #include <fcntl.h>
 #include <lutils/compute/AndroidHardwareBuffer.hpp>
 #include <sys/socket.h>
-#ifdef LUTILS_TEST_REGION_DEVICE
+#ifdef LUTILS_TEST_VULKAN
 #include <lutils/compute/Vulkan.hpp>
+#endif
+#ifdef LUTILS_TEST_OPENGL
+#include <lutils/compute/OpenGl.hpp>
+#endif
+#ifdef LUTILS_TEST_REGION_DEVICE
 #include <lutils/image/DeviceRegion.hpp>
 #endif
 
@@ -59,7 +64,8 @@ void ownership() {
     check(!alias->map(co::Access::Read));
     check(!alias->exportSyncFile(co::Access::Read));
     memory.reset();
-    // A mapping keeps both native storage and canonical synchronization state alive.
+    // A mapping keeps both native storage and canonical synchronization state
+    // alive.
     auto reimport = take(Ahb::import(alias->nativeBuffer()));
     alias.reset();
     check(!reimport->map(co::Access::Write));
@@ -95,11 +101,13 @@ void ownership() {
 }
 int main(int argc, char **argv) {
     try {
-        bool vulkan = false, strict = false;
+        bool vulkan = false, gles = false, strict = false;
         for (int i = 1; i < argc; ++i) {
             std::string option = argv[i];
             if (option == "--vulkan")
                 vulkan = true;
+            else if (option == "--gles")
+                gles = true;
             else if (option == "--require-supported")
                 strict = true;
             else
@@ -112,7 +120,7 @@ int main(int argc, char **argv) {
         ownership();
         std::unique_ptr<co::Device> device;
         auto executor = im::createCpuRegionExecutor();
-#ifdef LUTILS_TEST_REGION_DEVICE
+#ifdef LUTILS_TEST_VULKAN
         auto stats = std::make_shared<co::VulkanStatistics>();
         if (vulkan) {
             co::VulkanOptions options;
@@ -128,6 +136,22 @@ int main(int argc, char **argv) {
         }
 #else
         if (vulkan)
+            return strict ? 1 : 77;
+#endif
+#ifdef LUTILS_TEST_OPENGL
+        if (gles) {
+            device = take(co::createOpenGlDevice());
+            auto memory = take(Ahb::allocate(64));
+            auto imported = device->importMemory(memory);
+            if (!imported && imported.error().code == lutils::ErrorCode::Unsupported) {
+                std::cout << "SKIP: " << imported.error().message << '\n';
+                return strict ? 1 : 77;
+            }
+            check(bool(imported));
+            executor = take(im::createDeviceRegionExecutor(*device));
+        }
+#else
+        if (gles)
             return strict ? 1 : 77;
 #endif
         for (auto const &spec : formats())
@@ -161,11 +185,12 @@ int main(int argc, char **argv) {
                 for (auto it = pending.rbegin(); it != pending.rend(); ++it)
                     ok((*it)->wait());
             }
-#ifdef LUTILS_TEST_REGION_DEVICE
+#ifdef LUTILS_TEST_VULKAN
         check(stats->stagingBuffersCreated.load() == 0);
         check(stats->readbackVectorsCreated.load() == 0);
 #endif
-        std::cout << "AHB crop/pad: five formats, shared/separate planes, guards, fences and "
+        std::cout << "AHB crop/pad: five formats, shared/separate planes, guards, "
+                     "fences and "
                      "lifetime passed\n";
         return 0;
     } catch (std::exception const &e) {

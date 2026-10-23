@@ -34,6 +34,7 @@ struct NativeImage {
     virtual NativeImageDesc description() const noexcept = 0;
     virtual bool writable() const noexcept = 0;
     virtual bool aliases(NativeImage const &other) const noexcept = 0;
+    virtual bool aliasesMemory(Memory const &) const noexcept { return false; }
     virtual Result<std::unique_ptr<NativeImageMapping>> map(Access access) = 0;
     virtual Result<FileDescriptor> exportSyncFile(Access access) const = 0;
     virtual Result<void> importSyncFile(int fd, Access access) const = 0;

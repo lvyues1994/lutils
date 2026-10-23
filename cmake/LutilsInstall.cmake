@@ -28,6 +28,13 @@ if(LUTILS_BUILD_IMAGE_OPS)
     install(EXPORT lutilsImageOpsTargets NAMESPACE lutils:: DESTINATION ${lutils_package_dir})
     install(DIRECTORY image/ops/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
+if(LUTILS_ENABLE_OPENGL)
+    set_target_properties(lutils_compute_opengl PROPERTIES EXPORT_NAME compute_opengl)
+    install(TARGETS lutils_compute_opengl EXPORT lutilsOpenGlTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(EXPORT lutilsOpenGlTargets NAMESPACE lutils:: DESTINATION ${lutils_package_dir})
+    install(DIRECTORY compute/backends/opengl/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
 if(LUTILS_BUILD_KERNELC)
     set_target_properties(lutils-kernelc PROPERTIES EXPORT_NAME kernelc)
     install(TARGETS lutils-kernelc EXPORT lutilsToolsTargets
@@ -35,7 +42,7 @@ if(LUTILS_BUILD_KERNELC)
     install(EXPORT lutilsToolsTargets NAMESPACE lutils:: DESTINATION ${lutils_package_dir})
 endif()
 if(TARGET lutils::kernelc)
-    install(FILES cmake/LutilsKernel.cmake DESTINATION ${lutils_package_dir})
+    install(FILES cmake/LutilsKernel.cmake cmake/LutilsValidateGlsl.cmake DESTINATION ${lutils_package_dir})
 endif()
 configure_package_config_file(cmake/lutilsConfig.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/lutilsConfig.cmake"

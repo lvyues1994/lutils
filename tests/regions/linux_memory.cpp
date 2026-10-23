@@ -3,6 +3,7 @@
 #include <cstdarg>
 #include <fcntl.h>
 #include <linux/dma-buf.h>
+#include <linux/sync_file.h>
 #include <lutils/compute/LinuxDmaBuf.hpp>
 #include <lutils/image/LinuxImage.hpp>
 #include <sys/ioctl.h>
@@ -12,6 +13,7 @@ using namespace regions_test;
 namespace {
 bool simulate = false, interruptStart = false, againEnd = false, failEnd = false;
 unsigned starts = 0, ends = 0, exports = 0, imports = 0;
+int failEndAfter = -1;
 } // namespace
 extern "C" int __real_ioctl(int fd, unsigned long request, ...);
 // Fault-injection seam, not a real dma-buf or hardware interop test.
@@ -33,6 +35,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
     }
     if (request == DMA_BUF_IOCTL_SYNC) {
         if (static_cast<dma_buf_sync *>(value)->flags & DMA_BUF_SYNC_END) {
+            if (failEndAfter == 0) { failEndAfter = -1; errno = EIO; return -1; }
+            if (failEndAfter > 0) --failEndAfter;
             if (againEnd) {
                 againEnd = false;
                 errno = EAGAIN;
@@ -52,6 +56,10 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
             }
             ++starts;
         }
+        return 0;
+    }
+    if (request == SYNC_IOC_MERGE) {
+        static_cast<sync_merge_data *>(value)->fence = fcntl(fd, F_DUPFD_CLOEXEC, 0);
         return 0;
     }
     errno = ENOTTY;
@@ -106,6 +114,69 @@ int main() {
     check(!im::importDmaBufImage(desc));
     desc.modifier = 1;
     check(!im::importDmaBufImage(desc));
+    co::DmaBufNativeImageDesc native{{4, 4, co::NativeImageFormat::Yuv420},
+                                     0x3231564e,
+                                     {{fd.get(), 0, 4, 0}, {fd.get(), 16, 4, 0}},
+                                     false};
+    auto nativeImage = take(co::DmaBufNativeImage::import(native));
+    auto overlapping = native;
+    overlapping.planes[1].offset = 0;
+    check(!co::DmaBufNativeImage::import(overlapping));
+    overlapping = native;
+    overlapping.planes[0].modifier = 0x00ffffffffffffffULL;
+    check(!co::DmaBufNativeImage::import(overlapping));
+    auto nativeAlias = take(co::DmaBufNativeImage::import(native));
+    check(nativeImage->aliases(*nativeAlias));
+    check(nativeImage->dmaDescription().planes[0].fd != fd.get());
+    auto nativeMap = take(nativeImage->map(co::Access::ReadWrite));
+    check(nativeMap->planes().size() == 3);
+    check(nativeMap->planes()[1].pixelStride == 2 && nativeMap->planes()[1].rowStride == 4);
+    check(nativeMap->planes()[2].data == nativeMap->planes()[1].data + 1);
+    take(nativeMap->writablePlane(1))[0] = std::byte{71};
+    ok(nativeMap->finish());
+    check(nativeMap->planes().empty() && !nativeMap->writablePlane(1));
+    auto nativeRead = take(nativeAlias->map(co::Access::Read));
+    check(nativeRead->planes()[1].data[0] == std::byte{71});
+    ok(nativeRead->finish());
+    auto nativeFence = take(nativeImage->exportSyncFile(co::Access::Read));
+    ok(nativeImage->importSyncFile(nativeFence.get(), co::Access::Write));
+    native.readOnly = true;
+    check(!take(co::DmaBufNativeImage::import(native))->map(co::Access::Write));
+    native.planes[0].modifier = native.planes[1].modifier = 1;
+    check(!take(co::DmaBufNativeImage::import(native))->map(co::Access::Read));
+    native.planes[0].modifier = native.planes[1].modifier = 0;
+    native.planes[1].offset = 4095;
+    check(!co::DmaBufNativeImage::import(native));
+    native.planes[1].offset = 16;
+    native.planes[1].stride = 1;
+    check(!co::DmaBufNativeImage::import(native));
+    native.planes[1].stride = 4;
+    native.image.format = co::NativeImageFormat::Rgba8;
+    check(!co::DmaBufNativeImage::import(native));
+    native.fourcc = 0;
+    check(!co::DmaBufNativeImage::import(native));
+    co::DmaBufNativeImageDesc rgba{{4, 4, co::NativeImageFormat::Rgba8}, 0x34324241,
+                                  {{fd.get(), 0, 16, 0}}, false};
+    auto nativeRgba = take(im::importNativeDmaBufImage(rgba));
+    auto linearRgba = take(im::ImageResource::linear(nativeRgba.description(), {alias}, {{0, 0, 16}}));
+    check(nativeRgba.aliases(linearRgba) && linearRgba.aliases(nativeRgba));
+    auto sameCrop = take(im::RegionPlan::crop(nativeRgba.description(), {0, 0, 4, 4}));
+    auto cpu = im::createCpuRegionExecutor();
+    check(!cpu->submit(sameCrop, nativeRgba, linearRgba));
+    check(!cpu->submit(sameCrop, linearRgba, nativeRgba));
+    char secondPath[] = "/tmp/lutils-native-memory-XXXXXX";
+    co::FileDescriptor secondFd{mkstemp(secondPath)};
+    check(secondFd.get() >= 0 && unlink(secondPath) == 0 && ftruncate(secondFd.get(), 4096) == 0);
+    co::DmaBufNativeImageDesc split{{4, 4, co::NativeImageFormat::Yuv420}, 0x3231564e,
+                                   {{fd.get(), 0, 4, 0}, {secondFd.get(), 0, 4, 0}}, false};
+    auto splitImage = take(co::DmaBufNativeImage::import(split));
+    auto merged = take(splitImage->exportSyncFile(co::Access::ReadWrite));
+    ok(splitImage->importSyncFile(merged.get(), co::Access::Write));
+    auto splitMap = take(splitImage->map(co::Access::ReadWrite));
+    failEndAfter = 1;
+    check(!splitMap->finish());
+    check(splitMap->planes().empty() && !splitMap->writablePlane(0) && !splitMap->writablePlane(1));
+    ok(splitMap->finish());
     auto descriptor = memory->fd();
     memory.reset();
     check(fcntl(descriptor, F_GETFD) < 0 && errno == EBADF);
@@ -115,5 +186,6 @@ int main() {
     check(!host->map(co::Access::Write));
     auto read = take(host->map(co::Access::Read));
     check(!read->writableData() && read->data()[0] == std::byte{7});
-    std::cout << "Linux memory: descriptor ownership, simulated sync retries and cleanup passed\n";
+    std::cout << "Linux memory: descriptor ownership, simulated sync retries and "
+                 "cleanup passed\n";
 }

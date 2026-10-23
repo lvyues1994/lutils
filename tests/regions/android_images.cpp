@@ -12,9 +12,14 @@
 #include <mutex>
 #ifdef LUTILS_TEST_REGION_DEVICE
 #include <nearest_sample.hpp>
+#endif
+#ifdef LUTILS_TEST_VULKAN
 #include <lutils/compute/Vulkan.hpp>
+#endif
+#ifdef LUTILS_TEST_REGION_DEVICE
 #include <lutils/image/DeviceRegion.hpp>
 #endif
+#include "../compute/TestDevice.hpp"
 using namespace regions_test;
 void ensure(bool condition, int line) {
     if (!condition)
@@ -33,6 +38,8 @@ Image allocate(bool yuv, unsigned width, unsigned height) {
     d.format = yuv ? AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420 : AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
     d.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
               AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+    if (!yuv)
+        d.usage |= AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
     AHardwareBuffer *raw = nullptr;
     check(AHardwareBuffer_allocate(&d, &raw) == 0);
     auto owner = std::shared_ptr<AHardwareBuffer>{raw, AHardwareBuffer_release};
@@ -426,13 +433,13 @@ void queuedYuvImage(co::Device *device, co::Backend *backend) {
     }
     std::cout << "queued YUV AImage crop and retained reader lifetime passed\n";
 }
-int main(int argc, char **) {
+int main(int argc, char **argv) {
     try {
         std::unique_ptr<co::Backend> backend;
         co::Device *device = nullptr;
-#ifdef LUTILS_TEST_REGION_DEVICE
+#ifdef LUTILS_TEST_VULKAN
         auto stats = std::make_shared<co::VulkanStatistics>();
-        if (argc > 1) {
+        if (test_device::name(argc, argv) == "vulkan") {
             co::VulkanOptions options;
             options.requireHardware = true;
             options.statistics = stats;
@@ -442,6 +449,39 @@ int main(int argc, char **) {
 #else
         (void)argc;
 #endif
+        auto selected = test_device::name(argc, argv);
+        if (test_device::gl(selected)) {
+            backend = std::make_unique<co::Backend>(take(test_device::createGl(argc, argv)));
+            device = &backend->device();
+            auto rgba = allocate(false, 4, 4), output = allocate(false, 4, 4),
+                 yuv = allocate(true, 4, 4);
+            auto in = device->importImage(rgba.resource.nativeStorage());
+            auto out = device->importImage(output.resource.nativeStorage());
+            auto raw = device->importImage(yuv.resource.nativeStorage());
+            for (auto const *result : {&in, &out, &raw}) {
+                if (!*result && result->error().code == lutils::ErrorCode::Unsupported) {
+                    std::cout << "SKIP: " << result->error().message << '\n';
+                    return 77;
+                }
+                check(bool(*result));
+            }
+            co::CommandList probe;
+            ok(probe.copyImage({in.value(), out.value(), 0, 0, 0, 0, 4, 4, {}}));
+            auto done = device->submit(probe);
+            if (!done && done.error().code == lutils::ErrorCode::Unsupported) {
+                std::cout << "SKIP: " << done.error().message << '\n';
+                return 77;
+            }
+            ok(take(std::move(done))->wait());
+            auto blob = take(co::AndroidHardwareBufferMemory::allocate(64));
+            auto imported = device->importMemory(blob);
+            if (!imported && imported.error().code == lutils::ErrorCode::Unsupported) {
+                // RGBA copy has run; the remaining native/YUV tests need BLOB output.
+                std::cout << "SKIP remaining BLOB-dependent cases: " << imported.error().message << '\n';
+                return 77;
+            }
+            check(bool(imported));
+        }
         regions(false, device);
         if (!device)
             regions(true, nullptr);
@@ -454,6 +494,8 @@ int main(int argc, char **) {
 #ifdef LUTILS_TEST_REGION_DEVICE
         if (backend)
             typedNative(*backend);
+#endif
+#ifdef LUTILS_TEST_VULKAN
         check(stats->stagingBuffersCreated.load() == 0 &&
               stats->readbackVectorsCreated.load() == 0);
 #endif

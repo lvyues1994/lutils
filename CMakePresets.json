@@ -120,6 +120,24 @@
         "LUTILS_HOST_KERNELC": "${sourceDir}/build/host-kernel-tools/tools/kernelc/lutils-kernelc",
         "LUTILS_ENABLE_VULKAN": true
       }
+    },
+    {
+      "name": "compute-opengl",
+      "inherits": "release",
+      "cacheVariables": {
+        "LUTILS_BUILD_KERNELC": true,
+        "LUTILS_ENABLE_OPENGL": true,
+        "LUTILS_ENABLE_VULKAN": false
+      }
+    },
+    {
+      "name": "android-opengl",
+      "inherits": "android-compute",
+      "cacheVariables": {
+        "LUTILS_ENABLE_OPENGL": true,
+        "LUTILS_ENABLE_VULKAN": false,
+        "LUTILS_SHADER_TARGETS": "gles"
+      }
     }
   ],
   "buildPresets": [
@@ -169,6 +187,14 @@
     {
       "name": "android-compute",
       "configurePreset": "android-compute"
+    },
+    {
+      "name": "compute-opengl",
+      "configurePreset": "compute-opengl"
+    },
+    {
+      "name": "android-opengl",
+      "configurePreset": "android-opengl"
     }
   ],
   "testPresets": [
@@ -240,6 +266,20 @@
     {
       "name": "android-compute",
       "configurePreset": "android-compute",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "compute-opengl",
+      "configurePreset": "compute-opengl",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-opengl",
+      "configurePreset": "android-opengl",
       "output": {
         "outputOnFailure": true
       }

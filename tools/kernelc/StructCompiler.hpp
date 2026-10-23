@@ -36,6 +36,8 @@ struct StructCompiler {
     std::size_t sharedBytes = 0, sharedAlignment = 1;
     bool hasBarrier = false;
     bool usesHalf = false;
+    bool usesDouble = false;
+    std::vector<std::string> initializers;
     std::map<ValueDecl const *, std::string> names;
     std::map<FunctionDecl const *, std::string> functions;
     std::set<FunctionDecl const *> active;
@@ -92,6 +94,7 @@ struct StructCompiler {
         } else if (t->isSpecificBuiltinType(BuiltinType::Double)) {
             out.glsl = "double";
             out.bytes = out.align = 8;
+            usesDouble = true;
         } else if (auto *r = t->getAsCXXRecordDecl();
                    r && r->getQualifiedNameAsString() == "lutils::compute::kernel::half") {
             out.glsl = "float16_t";
@@ -119,8 +122,8 @@ struct StructCompiler {
                 if (!out.count || base.count ||
                     out.count >
                         UINT32_MAX / std::max<std::size_t>(1, alignTo(base.bytes, base.align)))
-                    fail(entry,
-                         "shader arrays require a positive bounded size and a non-array element");
+                    fail(entry, "shader arrays require a positive bounded size and a "
+                                "non-array element");
                 out.element = args[0].getAsType();
                 out.glsl = base.glsl;
                 out.align = base.align;
@@ -190,12 +193,12 @@ struct StructCompiler {
         for (auto *a : entry->specific_attrs<AnnotateAttr>())
             annotated |= a->getAnnotation() == "kernel";
         if (!annotated)
-            fail(entry, "kernel struct requires LUTILS_KERNEL or clang::annotate(\"kernel\")");
+            fail(entry, "kernel struct requires LUTILS_KERNEL or "
+                        "clang::annotate(\"kernel\")");
         if (entry->getNumBases() || entry->isUnion() || !entry->isAggregate() ||
             (entry->getDestructor() && entry->getDestructor()->isUserProvided()))
-            fail(
-                entry,
-                "kernel structs must be aggregates without bases or user constructors/destructors");
+            fail(entry, "kernel structs must be aggregates without bases or user "
+                        "constructors/destructors");
         std::set<unsigned> bufferSlots, imageSlots, uniformSlots;
         for (auto *d : entry->decls()) {
             if (auto *v = dyn_cast<VarDecl>(d); v && v->getName() == "fileLocation") {
@@ -247,7 +250,8 @@ struct StructCompiler {
                 auto slot = static_cast<unsigned>(args[3].getAsIntegral().getZExtValue());
                 if (!imageSlots.insert(slot).second)
                     fail(f, "duplicate image binding slot");
-                // Read format identity from the canonical enum declaration, not source spelling.
+                // Read format identity from the canonical enum declaration, not source
+                // spelling.
                 auto *et = args[0].getIntegralType()->getAs<EnumType>();
                 std::string formatName;
                 for (auto *v : et->getDecl()->enumerators())
@@ -313,7 +317,8 @@ struct StructCompiler {
                 names[f] = "c" + std::to_string(constants.size());
                 constants.push_back(f);
             } else
-                fail(f, "unsupported kernel member; constant arrays must be const std::array");
+                fail(f, "unsupported kernel member; constant arrays must be const "
+                        "std::array");
         }
         if (!hasLocal)
             fail(entry, "kernel requires local_size");
@@ -674,8 +679,17 @@ struct StructCompiler {
                     auto image = expr(c->getArg(0), true);
                     return n + "(" + image + "," + args(c, 1) + ")";
                 }
-                if (n == "sampleNearest")
-                    return "textureLod(" + args(c) + ",0.0)";
+                if (n == "sampleNearest") {
+                    auto resource = expr(c->getArg(0));
+                    return "lutils_sample_" + resource + "(" + expr(c->getArg(1)) + ")";
+                }
+                if (n == "imageSize") {
+                    auto *root = storageRoot(c->getArg(0));
+                    for (auto const &r : resources)
+                        if (r.field == root)
+                            return "imageSize(" + names.at(root) + ")";
+                    fail(e, "imageSize requires an image binding");
+                }
                 return n + "(" + args(c) + ")";
             }
             // libc++ can expose scalar <cmath> overloads through std::__math.
@@ -793,7 +807,7 @@ struct StructCompiler {
         bodies.push_back(out);
         return n;
     }
-    std::string shader() {
+    void prepare() {
         signature();
         CXXMethodDecl const *main = nullptr;
         for (auto *m : entry->methods())
@@ -805,13 +819,72 @@ struct StructCompiler {
         if (!main)
             fail(entry, "kernel main() not found");
         function(main, true);
-        std::vector<std::string> initializers;
         for (auto *f : constants)
             initializers.push_back(expr(f->getInClassInitializer()));
-        std::ostringstream out;
-        out << "#version 450\n";
+    }
+    std::string unsupported(ShaderTarget dialect) const {
+        if (dialect == ShaderTarget::Vulkan)
+            return {};
         if (usesHalf)
-            out << "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n"
+            return "GL targets do not support native float16 arithmetic/storage";
+        if (dialect == ShaderTarget::Gles) {
+            if (usesDouble)
+                return "GLES 3.1 does not support float64";
+            static std::set<std::string> formats{
+                "rgba32f", "rgba16f", "r32f",   "rgba32ui", "rgba16ui", "rgba8ui",    "r32ui",
+                "rgba32i", "rgba16i", "rgba8i", "r32i",     "rgba8",    "rgba8_snorm"};
+            for (auto const &r : resources) {
+                if (r.dimensions == 1)
+                    return "GLES 3.1 does not support 1D storage images";
+                if (r.dimensions && !r.sampled && !formats.count(r.qualifier))
+                    return "GLES 3.1 does not support storage image format " + r.qualifier;
+                if (r.dimensions && !r.sampled && r.read && r.write && r.qualifier != "r32f" &&
+                    r.qualifier != "r32ui" && r.qualifier != "r32i")
+                    return "GLES 3.1 requires readonly/writeonly for image format " + r.qualifier;
+            }
+        }
+        return {};
+    }
+    void decode(std::ostream &out, Type const &t, std::size_t offset, std::string const &dest) {
+        if (t.count) {
+            auto element = type(t.element);
+            for (std::size_t i = 0; i < t.count; ++i)
+                decode(out, element, offset + i * alignTo(element.bytes, element.align),
+                       dest + "[" + std::to_string(i) + "]");
+            return;
+        }
+        for (auto const &record : records)
+            if (record.type.glsl == t.glsl) {
+                for (auto const &f : record.fields)
+                    decode(out, type(f.first->getType()), offset + f.second,
+                           dest + "." + fieldNames.at(f.first));
+                return;
+            }
+        auto vec = t.glsl.find("vec");
+        if (vec != std::string::npos) {
+            auto scalar = vec == 0           ? "float"
+                          : t.glsl[0] == 'u' ? "uint"
+                          : t.glsl[0] == 'i' ? "int"
+                          : t.glsl[0] == 'd' ? "double"
+                          : t.glsl[0] == 'b' ? "bool"
+                                             : "float16_t";
+            auto count = static_cast<std::size_t>(t.glsl.back() - '0');
+            for (std::size_t i = 0; i < count; ++i)
+                out << dest << '[' << i << "]=" << scalarWord(scalar, offset + i * t.bytes / count)
+                    << ";\n";
+        } else
+            out << dest << '=' << scalarWord(t.glsl, offset) << ";\n";
+    }
+    std::string shader(ShaderTarget dialect = ShaderTarget::Vulkan) {
+        if (!unsupported(dialect).empty())
+            return {};
+        std::ostringstream out;
+        out << version(dialect);
+        if (dialect != ShaderTarget::Vulkan)
+            out << "// LUTILS_EXTERNAL_EXTENSIONS\n";
+        if (usesHalf)
+            out << "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : "
+                   "require\n"
                    "#extension GL_EXT_shader_16bit_storage : require\n";
         out << "layout(local_size_x=" << local[0] << ",local_size_y=" << local[1]
             << ",local_size_z=" << local[2] << ") in;\n";
@@ -827,32 +900,67 @@ struct StructCompiler {
                 out << declaration(shared[i].second, "s" + std::to_string(i)) << ";\n";
             out << "};\nshared SharedData shared_data;\n";
         }
+        unsigned bufferIndex = 0, imageIndex = 0, samplerIndex = 0;
         for (std::size_t i = 0; i < resources.size(); ++i) {
             auto const &r = resources[i];
-            out << "layout(set=0,binding=" << i;
+            auto binding = dialect == ShaderTarget::Vulkan ? static_cast<unsigned>(i)
+                           : r.sampled                     ? samplerIndex++
+                           : r.dimensions                  ? imageIndex++
+                                                           : bufferIndex++;
+            if (r.sampled && dialect != ShaderTarget::Vulkan)
+                out << "#ifndef LUTILS_SAMPLER_b" << i << "\n#define LUTILS_SAMPLER_b" << i
+                    << " sampler2D\n#define LUTILS_TEXTURE_b" << i << "(uv) textureLod(b" << i
+                    << ",uv,0.0)\n#endif\n";
+            out << "layout(" << (dialect == ShaderTarget::Vulkan ? "set=0," : "")
+                << "binding=" << binding;
             auto access = r.write ? (r.read ? "" : "writeonly ") : "readonly ";
-            if (r.sampled)
-                out << ") uniform sampler2D b" << i << ";\n";
-            else if (r.dimensions)
-                out << "," << r.qualifier << ") uniform " << access << r.prefix << "image"
-                    << r.dimensions << "D b" << i << ";\n";
+            auto precision = dialect == ShaderTarget::Gles ? "highp " : "";
+            if (r.sampled) {
+                out << ") uniform " << precision
+                    << (dialect == ShaderTarget::Vulkan ? "sampler2D"
+                                                        : "LUTILS_SAMPLER_b" + std::to_string(i))
+                    << " b" << i << ";\nvec4 lutils_sample_b" << i << "(vec2 uv) { return ";
+                if (dialect == ShaderTarget::Vulkan)
+                    out << "textureLod(b" << i << ",uv,0.0)";
+                else
+                    out << "LUTILS_TEXTURE_b" << i << "(uv)";
+                out << "; }\n";
+            } else if (r.dimensions)
+                out << "," << r.qualifier << ") uniform " << access << precision << r.prefix
+                    << "image" << r.dimensions << "D b" << i << ";\n";
             else
                 out << ",std430) " << access << "buffer B" << i << " { " << r.type.glsl
                     << " data[]; } b" << i << ";\n";
         }
-        out << "layout(push_constant,std430) uniform Params { layout(offset=0) uvec4 extent;\n";
+        if (dialect == ShaderTarget::Vulkan)
+            out << "layout(push_constant,std430) uniform Params { layout(offset=0) "
+                   "uvec4 extent;\n";
+        else
+            out << packet((parameterBytes + 3) / 4) << "struct Params { uvec4 extent;\n";
         for (auto const &u : uniforms)
-            out << "layout(offset=" << u.offset << ") "
+            out << (dialect == ShaderTarget::Vulkan
+                        ? "layout(offset=" + std::to_string(u.offset) + ") "
+                        : "")
                 << declaration(u.type, names[u.field].substr(2)) << ";\n";
-        out << "} p;\n";
+        out << (dialect == ShaderTarget::Vulkan ? "} p;\n"
+                                                : "}; Params p;\nvoid lutils_params() { "
+                                                  "p.extent=packet.words[0];\n");
+        if (dialect != ShaderTarget::Vulkan) {
+            for (auto const &u : uniforms)
+                decode(out, u.type, u.offset, names[u.field]);
+            out << "}\n";
+        }
         for (std::size_t i = 0; i < constants.size(); ++i)
             out << "const " << declaration(type(constants[i]->getType()), name(constants[i]))
                 << " = " << initializers[i] << ";\n";
         for (auto const &b : bodies)
             out << b << "\n";
         out << "void main() { ";
+        if (dialect != ShaderTarget::Vulkan)
+            out << "lutils_params(); ";
         if (shared.empty() && !hasBarrier)
-            out << "if(any(greaterThanEqual(gl_GlobalInvocationID,p.extent.xyz))) return; ";
+            out << "if(any(greaterThanEqual(gl_GlobalInvocationID,p.extent.xyz))) "
+                   "return; ";
         out << "kernel_main(); }\n";
         return out.str();
     }
@@ -868,7 +976,8 @@ struct StructCompiler {
                              split == std::string::npos ? "1" : m.first.substr(split + 1)};
         }
         std::ostringstream o;
-        o << "#include <string_view>\n#define LUTILS_SHADER_TEXT_IMPL(...) #__VA_ARGS__\n#define "
+        o << "#include <string_view>\n#define LUTILS_SHADER_TEXT_IMPL(...) "
+             "#__VA_ARGS__\n#define "
              "LUTILS_SHADER_TEXT(...) LUTILS_SHADER_TEXT_IMPL(__VA_ARGS__)\n";
         for (auto const &m : profile) {
             auto const &n = m.first;
@@ -913,19 +1022,25 @@ struct StructCompiler {
         }
         o << "template<> struct KernelTraits<" << qualified()
           << "> {\nstatic KernelSource source();\nstatic std::vector<Word> pack(" << qualified()
-          << " const &,Extent3);\nstatic Result<void> record(Backend &,CommandList &,KernelHandle,"
+          << " const &,Extent3);\nstatic Result<void> record(Backend &,CommandList "
+             "&,KernelHandle,"
           << qualified() << " const &,Extent3);\n};\n}\n";
         return o.str();
     }
     std::string wrapper() {
         std::ostringstream o;
-        o << "#include " << std::quoted(packageName.getValue() + ".hpp") << "\n#include "
-          << std::quoted(packageName.getValue() + ".spv.hpp")
-          << "\nnamespace lutils::compute {\nKernelSource KernelTraits<" << qualified()
+        o << "#include " << std::quoted(packageName.getValue() + ".hpp") << "\n";
+        if (hasTarget("vulkan"))
+            o << "#include " << std::quoted(packageName.getValue() + ".spv.hpp") << "\n";
+        o << "namespace lutils::compute {\nKernelSource KernelTraits<" << qualified()
           << ">::source() { KernelSource s; s.abiVersion=2; s.name=" << std::quoted(location)
           << "; s.localSize={" << local[0] << "," << local[1] << "," << local[2]
-          << "}; s.parameterWords=" << (parameterBytes + 3) / 4
-          << ";\ns.spirv=lutils::generated::spirv_" << packageName << "();\n";
+          << "}; s.parameterWords=" << (parameterBytes + 3) / 4 << ";\n";
+        if (hasTarget("vulkan"))
+            o << "s.spirv=lutils::generated::spirv_" << packageName << "();\n";
+        for (auto dialect : {ShaderTarget::OpenGl, ShaderTarget::Gles})
+            if (hasTarget(dialect == ShaderTarget::OpenGl ? "opengl" : "gles"))
+                glslArtifact(o, "s", dialect, shader(dialect), unsupported(dialect));
         for (auto const &r : resources) {
             o << "s.bindings.push_back(Access::"
               << (r.write ? (r.read ? "ReadWrite" : "Write") : "Read")
@@ -943,7 +1058,8 @@ struct StructCompiler {
         o << "s.sharedMemoryBytes=" << alignTo(sharedBytes, sharedAlignment)
           << "; s.requiresFullWorkgroups=" << (!shared.empty() || hasBarrier ? "true" : "false")
           << ";\n";
-        o << "s.cpuDispatch=+[](Extent3 extent,std::vector<CpuBuffer> const &b,std::vector<Word> "
+        o << "s.cpuDispatch=+[](Extent3 extent,std::vector<CpuBuffer> const "
+             "&b,std::vector<Word> "
              "const &p,CpuExecution &execution) { "
           << qualified() << " k{}; (void)p;\n";
         for (std::size_t i = 0; i < resources.size(); ++i) {
@@ -974,12 +1090,14 @@ struct StructCompiler {
           << ">::record(Backend &backend,CommandList &commands,KernelHandle handle," << qualified()
           << " const &k,Extent3 extent) {\n";
         o << "if(k.local_size != kernel::uvec3{" << local[0] << "," << local[1] << "," << local[2]
-          << "}) return Error{ErrorCode::InvalidArgument,\"local_size differs from compiled "
+          << "}) return Error{ErrorCode::InvalidArgument,\"local_size differs from "
+             "compiled "
              "kernel\"};\n";
         for (auto *f : constants)
             o << "if(k." << f->getNameAsString() << " != " << qualified() << "{}."
               << f->getNameAsString()
-              << ") return Error{ErrorCode::InvalidArgument,\"constant array differs from compiled "
+              << ") return Error{ErrorCode::InvalidArgument,\"constant array differs "
+                 "from compiled "
                  "kernel\"};\n";
         o << "std::vector<BufferHandle> buffers;\n";
         for (std::size_t i = 0; i < resources.size(); ++i)
@@ -987,7 +1105,8 @@ struct StructCompiler {
               << "); if(!b" << i << ") return b" << i << ".error(); buffers.push_back(b" << i
               << ".value());\n";
         o << "return "
-             "commands.dispatch(Dispatch{std::move(handle),std::move(buffers),pack(k,extent),"
+             "commands.dispatch(Dispatch{std::move(handle),std::move(buffers),pack("
+             "k,extent),"
              "extent});\n}\n";
         o << "std::vector<Word> KernelTraits<" << qualified() << ">::pack(" << qualified()
           << " const &k,Extent3 extent) { (void)k;\n";

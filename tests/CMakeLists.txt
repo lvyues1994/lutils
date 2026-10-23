@@ -61,7 +61,7 @@ if(LUTILS_INSTALL AND lutils_top_level AND NOT CMAKE_CROSSCOMPILING)
     add_test(NAME downstream.packages COMMAND ${CMAKE_COMMAND}
         -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/package-check -DCOMPILER=${CMAKE_CXX_COMPILER}
-        -DOPS=${LUTILS_BUILD_IMAGE_OPS} -DTOOLS=${lutils_test_tools} -DHOST_KERNELC=${LUTILS_HOST_KERNELC} -DGPU=${LUTILS_ENABLE_VULKAN}
+        -DOPS=${LUTILS_BUILD_IMAGE_OPS} -DTOOLS=${lutils_test_tools} -DHOST_KERNELC=${LUTILS_HOST_KERNELC} -DGPU=${LUTILS_ENABLE_VULKAN} -DGL=${LUTILS_ENABLE_OPENGL}
         -DLLVM_DIR=${LLVM_DIR} -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR}
         -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
         -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
@@ -100,7 +100,7 @@ if(ANDROID)
     set_tests_properties(image.native.android_cpu PROPERTIES TIMEOUT 60)
     if(LUTILS_BUILD_IMAGE_OPS AND LUTILS_ENABLE_VULKAN)
         target_link_libraries(android_image_tests PRIVATE lutils::image_ops lutils::compute_vulkan)
-        target_compile_definitions(android_image_tests PRIVATE LUTILS_TEST_REGION_DEVICE)
+        target_compile_definitions(android_image_tests PRIVATE LUTILS_TEST_REGION_DEVICE LUTILS_TEST_VULKAN)
         add_test(NAME image.native.android_vulkan COMMAND android_image_tests vulkan)
         set_tests_properties(image.native.android_vulkan PROPERTIES TIMEOUT 60)
     endif()
@@ -115,7 +115,7 @@ if(ANDROID)
     set_tests_properties(image.regions.android_cpu PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     if(LUTILS_BUILD_IMAGE_OPS AND LUTILS_ENABLE_VULKAN)
         target_link_libraries(android_region_tests PRIVATE lutils::image_ops lutils::compute_vulkan)
-        target_compile_definitions(android_region_tests PRIVATE LUTILS_TEST_REGION_DEVICE)
+        target_compile_definitions(android_region_tests PRIVATE LUTILS_TEST_REGION_DEVICE LUTILS_TEST_VULKAN)
         add_test(NAME image.regions.android_vulkan COMMAND android_region_tests --vulkan)
         set_tests_properties(image.regions.android_vulkan PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
@@ -156,7 +156,7 @@ foreach(mode IN ITEMS source install)
         -DMODE=${mode} -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/downstream-${mode}
         -DCOMPILER=${CMAKE_CXX_COMPILER} -DOPS=${LUTILS_BUILD_IMAGE_OPS} -DTOOLS=${lutils_test_tools} -DHOST_KERNELC=${LUTILS_HOST_KERNELC}
-        -DGPU=${LUTILS_ENABLE_VULKAN} -DLLVM_DIR=${LLVM_DIR}
+        -DGPU=${LUTILS_ENABLE_VULKAN} -DGL=${LUTILS_ENABLE_OPENGL} -DLLVM_DIR=${LLVM_DIR}
         -DCLANG_INCLUDE=${LUTILS_CLANG_INCLUDE_DIR} -DCLANG_LIBRARY=${LUTILS_CLANG_CPP_LIBRARY}
         -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/downstream/check.cmake)
@@ -165,12 +165,12 @@ endforeach()
 
 endif()
 
-if(ANDROID AND LUTILS_INSTALL AND LUTILS_ANDROID_DEVICE_TESTS)
+if(ANDROID AND LUTILS_INSTALL)
     add_test(NAME downstream.android COMMAND ${CMAKE_COMMAND}
         -DROOT=${PROJECT_SOURCE_DIR} -DBUILD=${PROJECT_BINARY_DIR}
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/android-sdk
         -DTOOLCHAIN=${CMAKE_TOOLCHAIN_FILE} -DABI=${ANDROID_ABI} -DPLATFORM=${ANDROID_PLATFORM}
-        -DFULL=${LUTILS_BUILD_IMAGE_OPS} -DGPU=${LUTILS_ENABLE_VULKAN}
+        -DFULL=${LUTILS_BUILD_IMAGE_OPS} -DGPU=${LUTILS_ENABLE_VULKAN} -DGL=${LUTILS_ENABLE_OPENGL}
         -DHOST_KERNELC=${LUTILS_HOST_KERNELC} -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
         "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}" -P ${CMAKE_CURRENT_SOURCE_DIR}/android/sdk.cmake)
     set_tests_properties(downstream.android PROPERTIES TIMEOUT 180 LABELS downstream)
@@ -246,7 +246,7 @@ if(LUTILS_BUILD_IMAGE_OPS)
     add_test(NAME kernelc.dependencies COMMAND ${CMAKE_COMMAND}
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DROOT=${PROJECT_SOURCE_DIR}
         -DTEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compute -DWORK=${CMAKE_CURRENT_BINARY_DIR}/dependency-check
-        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL} -DGL=${LUTILS_ENABLE_OPENGL}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/dependency.cmake)
     add_test(NAME kernelc.output_collision COMMAND ${CMAKE_COMMAND}
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DWORK=${CMAKE_CURRENT_BINARY_DIR}/collision-check
@@ -361,6 +361,33 @@ if(LUTILS_BUILD_IMAGE_OPS)
     add_test(NAME shader.preprocessing_profile COMMAND ${CMAKE_COMMAND}
         -DTOOL=$<TARGET_FILE:lutils-kernelc> -DROOT=${PROJECT_SOURCE_DIR}
         -DTEST_DIR=${CMAKE_CURRENT_SOURCE_DIR}/compute -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shader-profile-check
-        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL}
+        -DGLSLANG=${LUTILS_GLSLANG} -DSPIRV_VAL=${LUTILS_SPIRV_VAL} -DGL=${LUTILS_ENABLE_OPENGL}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/compute/shader_profile.cmake)
+endif()
+
+if(LUTILS_ENABLE_OPENGL AND LUTILS_BUILD_IMAGE_OPS)
+    add_executable(opengl_contract_tests compute/opengl.cpp)
+    target_link_libraries(opengl_contract_tests PRIVATE lutils_add_test_kernel lutils::compute lutils_development)
+    set(gl_dialects gles)
+    if(NOT ANDROID)
+        list(PREPEND gl_dialects opengl)
+    endif()
+    foreach(target IN ITEMS compute_tests compute_async_tests portable_math_tests workgroup_tests device_region_tests shader_tests half_tests opengl_contract_tests)
+        target_link_libraries(${target} PRIVATE lutils::compute_opengl)
+        target_compile_definitions(${target} PRIVATE LUTILS_TEST_OPENGL)
+        foreach(dialect IN LISTS gl_dialects)
+            add_test(NAME ${target}.${dialect} COMMAND ${target} ${dialect})
+            set_tests_properties(${target}.${dialect} PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS opengl)
+        endforeach()
+    endforeach()
+endif()
+if(ANDROID AND LUTILS_ENABLE_OPENGL AND LUTILS_BUILD_IMAGE_OPS)
+    foreach(target IN ITEMS android_image_tests android_region_tests)
+        target_link_libraries(${target} PRIVATE lutils::image_ops lutils::compute_opengl)
+        target_compile_definitions(${target} PRIVATE LUTILS_TEST_REGION_DEVICE LUTILS_TEST_OPENGL)
+    endforeach()
+    add_test(NAME image.native.android_gles COMMAND android_image_tests gles)
+    add_test(NAME image.regions.android_gles COMMAND android_region_tests --gles)
+    set_tests_properties(image.native.android_gles image.regions.android_gles
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60 RUN_SERIAL TRUE LABELS opengl)
 endif()

@@ -2,6 +2,13 @@
 #include <lutils/image/LinuxImage.hpp>
 
 namespace lutils::image {
+Result<ImageResource> importNativeDmaBufImage(compute::DmaBufNativeImageDesc description,
+                                              ColorSpec color, Rectangle visible) {
+    auto image = compute::DmaBufNativeImage::import(std::move(description));
+    if (!image)
+        return image.error();
+    return ImageResource::native(std::move(image).value(), color, visible);
+}
 Result<ImageResource> importDmaBufImage(DmaBufImageDesc const &description) {
     if (!description.modifier || *description.modifier != 0)
         return Error{ErrorCode::Unsupported, "dma-buf regions require explicit linear layout"};

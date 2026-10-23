@@ -1,7 +1,8 @@
 # lutils
 
-C++17 工具库，提供 expected、类型擦除、SIMD、图像模型及 CPU/Vulkan 计算模块。
+C++17 工具库，提供 expected、类型擦除、SIMD、图像模型及 CPU/Vulkan/OpenGL 计算模块。
 expected 和类型擦除均为无第三方依赖的头文件库。
+OpenGL/GLES 的架构、构建和原生内存接入见 [OpenGL 后端](docs/opengl.md)。
 
 ## expected
 

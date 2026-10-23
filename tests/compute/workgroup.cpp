@@ -1,7 +1,8 @@
+#include "TestDevice.hpp"
 #include <atomic_ops.hpp>
 #include <cancellation.hpp>
-#include <histogram.hpp>
 #include <global_counter.hpp>
+#include <histogram.hpp>
 #include <iostream>
 #include <reduction.hpp>
 #ifdef LUTILS_TEST_VULKAN
@@ -24,8 +25,11 @@ void check(bool value) {
 }
 int main(int argc, char **argv) {
     try {
-        bool gpu = argc > 1;
+        auto selected = test_device::name(argc, argv);
+        bool gpu = selected != "cpu";
         auto device = take(createCpuDevice());
+        if (test_device::gl(selected))
+            device = take(test_device::createGl(argc, argv));
 #ifdef LUTILS_TEST_VULKAN
         VulkanOptions options;
         options.validationReport = std::make_shared<ValidationReport>();
@@ -38,7 +42,7 @@ int main(int argc, char **argv) {
             else
                 throw std::invalid_argument("unknown workgroup test option");
         }
-        if (gpu)
+        if (selected == "vulkan")
             device = take(createVulkanDevice(options));
 #else
         (void)argv;
