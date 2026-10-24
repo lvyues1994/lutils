@@ -2,11 +2,12 @@ add_executable(simd_tests main.cpp Scalar.cpp)
 target_link_libraries(simd_tests PRIVATE lutils::simd_dispatch lutils_development)
 set(simd_test_targets dispatch scalar)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_sources(simd_tests PRIVATE Sse2.cpp Avx2.cpp)
+    target_sources(simd_tests PRIVATE Sse2.cpp Avx2.cpp Avx2Fma.cpp)
     target_compile_definitions(simd_tests PRIVATE LUTILS_SIMD_X86)
     set_source_files_properties(Sse2.cpp PROPERTIES COMPILE_OPTIONS "-msse2;-mno-avx;-mno-fma")
     set_source_files_properties(Avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mno-fma")
-    list(APPEND simd_test_targets sse2 avx2)
+    set_source_files_properties(Avx2Fma.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+    list(APPEND simd_test_targets sse2 avx2 avx2_fma)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     target_sources(simd_tests PRIVATE Neon.cpp)
     target_compile_definitions(simd_tests PRIVATE LUTILS_SIMD_ARM64)
@@ -54,8 +55,10 @@ target_link_libraries(simd_image_tests PRIVATE lutils::image_simd lutils_develop
 add_test(NAME simd.image COMMAND simd_image_tests)
 set_tests_properties(simd.image PROPERTIES TIMEOUT 60)
 set(simd_rejections "unqualified fixed-width" "unqualified fixed-width" "shuffle index"
-    "preserves the numeric category" "conver" "operator|invalid operands")
-foreach(case RANGE 1 6)
+    "preserves the numeric category" "conver" "operator|invalid operands"
+    "1..64 lanes" "1..64 lanes" "permute index out of range" "nonnegative"
+    "divisible byte counts" "split requires two nonempty parts")
+foreach(case RANGE 1 12)
     math(EXPR index "${case} - 1")
     list(GET simd_rejections ${index} pattern)
     add_test(NAME simd.reject.${case} COMMAND ${CMAKE_COMMAND}

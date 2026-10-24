@@ -1,0 +1,79 @@
+{
+  "baseline": "be4b9085f6a5d689a19473db0d76531123632d7b",
+  "after": "simd-evolution-release (implementation patch archived)",
+  "protocol": "abba-v1",
+  "blocks": 5,
+  "processes_per_version": 10,
+  "regression_threshold": 0.05,
+  "noise_threshold": 0.03,
+  "suites": {
+    "linux-composition": {
+      "status": "inconclusive",
+      "pass": 93,
+      "regression": 0,
+      "inconclusive": 27,
+      "binary_sha256": {
+        "before": "5f3a4799d48a878f41624046ae71a89036afd14adc020fca280a1d97d260d7f1",
+        "after": "f571188ea7e23bff42c70f4d67c97e8f4489e973c2e6873514efb11026f22fb3"
+      }
+    },
+    "linux-filters": {
+      "status": "regression",
+      "pass": 153,
+      "regression": 23,
+      "inconclusive": 40,
+      "binary_sha256": {
+        "before": "1ee8f0c4aa3c333b5c5f6779f067d0349b472491788c8edd7ab67b36a07a76e9",
+        "after": "7ae6f154ebf5e8ce67391f452454d57284e53a683446630ac24a0810833a9ba5"
+      }
+    },
+    "linux-primitives": {
+      "status": "inconclusive",
+      "pass": 207,
+      "regression": 0,
+      "inconclusive": 18,
+      "binary_sha256": {
+        "before": "7a0044614fd03f946a79ab8b79620e7b787ff67933de93c14858f01af20ed063",
+        "after": "1ff325a0556d5408210a161d0d9fe8c16376ae968ff93f6e15832f76e359f9be"
+      }
+    },
+    "android-composition": {
+      "status": "regression",
+      "pass": 70,
+      "regression": 1,
+      "inconclusive": 1,
+      "binary_sha256": {
+        "before": "db697a57a3f54a75c675ae431847524888585f3045e37047604d18d04f8f9800",
+        "after": "201a7f56a27ce0cd365fdd8037e0f479b7f5253cfe6654551b26b1c5a7a89d66"
+      }
+    },
+    "android-filters": {
+      "status": "regression",
+      "pass": 102,
+      "regression": 26,
+      "inconclusive": 16,
+      "binary_sha256": {
+        "before": "cc709fb9197a57b28d5557fa51099725e732fff8e37dbd27c072d82601802c23",
+        "after": "5301777d6fe9eea19c9880d3cac1ca7a33b228baea2c2c7a81753aa20bf7ba82"
+      }
+    },
+    "android-primitives": {
+      "status": "inconclusive",
+      "pass": 163,
+      "regression": 0,
+      "inconclusive": 5,
+      "binary_sha256": {
+        "before": "0dd597fcd14bdf550ae1878f10358e15415a280706edab4bf87fd6cf8b377a0c",
+        "after": "582c0d72fc2179fb108f13d7f88226ac365987b725821e27c23ae3dd2ec383c0"
+      }
+    }
+  },
+  "archive": {
+    "path": ".local-artifacts/simd/vector-foundation.tar.gz",
+    "sha256": "c710fb9979d3540f2c30dc9eb29b2cc419da81c95aa598ce0e6e362e96c390c6",
+    "bytes": 4848683,
+    "files": 637,
+    "notes": "Final captures listed in evidence-notes.txt; intermediate and intentionally interrupted diagnostic captures are excluded from published statistics."
+  },
+  "implementation_patch_sha256": "c48aa03bd2d5c6961c0909bf288dc991b75dc450bd6c3c68f7d7224a14837c7e"
+}

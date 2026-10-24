@@ -1,5 +1,5 @@
 #pragma once
-#include <lutils/simd/detail/Scalar.hpp>
+#include <lutils/simd/detail/Vector.hpp>
 #if defined(__SSE2__) || defined(_M_X64)
 #include <emmintrin.h>
 
@@ -17,7 +17,7 @@ template <class T> LUTILS_SIMD_INLINE std::uint64_t sseMask(__m128i v) noexcept 
     static LUTILS_SIMD_INLINE void NAME(T *o, T const *a, T const *b) noexcept {                   \
         write(o, INTRINSIC(read(a), read(b)));                                                     \
     }
-template <class T> struct SseInteger : Emulated<T, abi::sse2> {
+template <class T> struct SseInteger : CompilerOps<T, abi::sse2> {
     static LUTILS_SIMD_INLINE __m128i read(T const *p) noexcept {
         return _mm_loadu_si128(reinterpret_cast<__m128i const *>(p));
     }
@@ -33,7 +33,7 @@ template <class T> struct SseInteger : Emulated<T, abi::sse2> {
             write(lo, _mm_unpacklo_epi16(x, y));
             write(hi, _mm_unpackhi_epi16(x, y));
         } else
-            Emulated<T, abi::sse2>::zip(lo, hi, a, b);
+            CompilerOps<T, abi::sse2>::zip(lo, hi, a, b);
     }
 };
 template <class T, std::size_t Bytes> struct SseWidth;
@@ -43,18 +43,15 @@ template <class T, std::size_t Bytes> struct SseWidth;
         using SseInteger<T>::write;                                                                \
         LUTILS_SSE_BINARY(add, _mm_add_epi##SUFFIX)                                                \
         LUTILS_SSE_BINARY(sub, _mm_sub_epi##SUFFIX)                                                \
-        static LUTILS_SIMD_INLINE std::uint64_t equal(T const *a, T const *b) noexcept {           \
-            return sseMask<T>(_mm_cmpeq_epi##SUFFIX(read(a), read(b)));                            \
-        }                                                                                          \
-        static LUTILS_SIMD_INLINE std::uint64_t less(T const *a, T const *b) noexcept {            \
-            auto x = read(a), y = read(b);                                                         \
-            if constexpr (std::is_unsigned_v<T>) {                                                 \
-                auto sign = SIGN;                                                                  \
-                x = _mm_xor_si128(x, sign);                                                        \
-                y = _mm_xor_si128(y, sign);                                                        \
-            }                                                                                      \
-            return sseMask<T>(_mm_cmpgt_epi##SUFFIX(y, x));                                        \
-        }                                                                                          \
+        static LUTILS_SIMD_INLINE void lessWide(MaskLane<T> *out, T const *a,                     \
+                                                T const *b) noexcept {                           \
+            auto x = read(a), y = read(b);                                                       \
+            if constexpr (std::is_unsigned_v<T>) {                                              \
+                x = _mm_xor_si128(x, SIGN);                                                      \
+                y = _mm_xor_si128(y, SIGN);                                                      \
+            }                                                                                   \
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(out), _mm_cmpgt_epi##SUFFIX(y, x));      \
+        }                                                                                       \
     };
 LUTILS_SSE_WIDTH(1, 8, _mm_set1_epi8(-128))
 LUTILS_SSE_WIDTH(2, 16, _mm_set1_epi16(-32768))
@@ -110,7 +107,7 @@ template <> struct Ops<std::uint64_t, abi::sse2> : SseWidth<std::uint64_t, 8> {}
 template <> struct Ops<std::int64_t, abi::sse2> : SseWidth<std::int64_t, 8> {};
 
 #define LUTILS_SSE_FLOAT(TYPE, REG, SUFFIX)                                                        \
-    template <> struct Ops<TYPE, abi::sse2> : Emulated<TYPE, abi::sse2> {                          \
+    template <> struct Ops<TYPE, abi::sse2> : CompilerOps<TYPE, abi::sse2> {                       \
         using T = TYPE;                                                                            \
         static LUTILS_SIMD_INLINE REG read(T const *p) noexcept { return _mm_loadu_##SUFFIX(p); }  \
         static LUTILS_SIMD_INLINE void write(T *p, REG v) noexcept { _mm_storeu_##SUFFIX(p, v); }  \
@@ -118,14 +115,6 @@ template <> struct Ops<std::int64_t, abi::sse2> : SseWidth<std::int64_t, 8> {};
         LUTILS_SSE_BINARY(sub, _mm_sub_##SUFFIX)                                                   \
         LUTILS_SSE_BINARY(mul, _mm_mul_##SUFFIX)                                                   \
         LUTILS_SSE_BINARY(div, _mm_div_##SUFFIX)                                                   \
-        static LUTILS_SIMD_INLINE std::uint64_t equal(T const *a, T const *b) noexcept {           \
-            return static_cast<unsigned>(                                                          \
-                _mm_movemask_##SUFFIX(_mm_cmpeq_##SUFFIX(read(a), read(b))));                      \
-        }                                                                                          \
-        static LUTILS_SIMD_INLINE std::uint64_t less(T const *a, T const *b) noexcept {            \
-            return static_cast<unsigned>(                                                          \
-                _mm_movemask_##SUFFIX(_mm_cmplt_##SUFFIX(read(a), read(b))));                      \
-        }                                                                                          \
     };
 LUTILS_SSE_FLOAT(float, __m128, ps)
 LUTILS_SSE_FLOAT(double, __m128d, pd)

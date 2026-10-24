@@ -127,9 +127,10 @@ class PairedTests(unittest.TestCase):
     def test_case_or_affinity_change(self):
         path = self.session()
         original = (path / "0.jsonl").read_text()
-        for field, value in (("source_stride", 999), ("cpu_before", 7)):
+        for field, value in (("source_stride", 999), ("cpu_before", 7),
+                             ("implementation", "intrinsic")):
             rows = [json.loads(line) for line in original.splitlines()]
-            if field == "source_stride":
+            if field in ("source_stride", "implementation"):
                 rows[1][field] = value
             else:
                 rows[1]["samples"][0][field] = value

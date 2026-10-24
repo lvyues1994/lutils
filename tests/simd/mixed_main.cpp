@@ -46,6 +46,13 @@ int main() {
     };
     if (!conversion(baselineConversion))
         return 1;
+    auto selection = [](auto function) {
+        float a[]{0, 3, -1, 8}, b[]{-1, 2, 7, 4}, out[4]{};
+        return function(out, a, b) == 5 && out[0] == -1 && out[1] == 3 && out[2] == 7 &&
+               out[3] == 8;
+    };
+    if (!selection(baselineSelection))
+        return 1;
     auto features = lutils::simd::cpu_features();
     if (features.avx2 && features.fma) {
         auto advanced = advancedAddress();
@@ -56,6 +63,8 @@ int main() {
         if (!packing(advancedPacking))
             return 1;
         if (!conversion(advancedConversion))
+            return 1;
+        if (!selection(advancedSelection))
             return 1;
     }
     std::cout << "mixed ISA linkage and nonfused arithmetic passed\n";

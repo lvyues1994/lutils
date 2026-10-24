@@ -58,14 +58,14 @@ jobs:
           paired_root="$RUNNER_TEMP/lutils-pair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           before_sha=$(uv run --no-project --offline --python '>=3.12' python -c 'import json,sys; print(json.load(open(sys.argv[1]))["before"])' "$paired_root/revisions.json")
           mkdir -p build/performance
-          for suite in extended primitives va; do
+          for suite in composition extended primitives va; do
             uv run --no-project --offline --python '>=3.12' tools/simd/pair.py capture --before-build "$paired_root/before" \
               --after-build "$paired_root/after" --before-revision "$before_sha" \
               --after-revision "$SIMD_AFTER" --suite "$suite" --cpu "$SIMD_CPU" \
               --machine-id "$SIMD_MACHINE" --output "$paired_root/$suite"
           done
           status=0
-          for suite in extended primitives va; do
+          for suite in composition extended primitives va; do
             uv run --no-project --offline --python '>=3.12' tools/simd/pair.py compare "$paired_root/$suite" \
               --output "build/performance/$suite-report.json" || status=1
           done
@@ -82,6 +82,7 @@ jobs:
           name: simd-performance-raw-${{ github.run_id }}
           retention-days: 14
           path: |
+            ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/composition
             ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/extended
             ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/primitives
             ${{ runner.temp }}/lutils-pair-${{ github.run_id }}-${{ github.run_attempt }}/va

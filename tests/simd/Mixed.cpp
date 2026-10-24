@@ -6,11 +6,13 @@ namespace s = lutils::simd;
 #define ARITHMETIC advancedArithmetic
 #define PACKING advancedPacking
 #define CONVERSION advancedConversion
+#define SELECTION advancedSelection
 #else
 #define ADDRESS baselineAddress
 #define ARITHMETIC baselineArithmetic
 #define PACKING baselinePacking
 #define CONVERSION baselineConversion
+#define SELECTION baselineSelection
 #endif
 namespace {
 std::optional<std::size_t> mismatchWrapper(std::uint8_t const *a, std::uint8_t const *b,
@@ -39,3 +41,12 @@ void CONVERSION(std::uint32_t *out, float const *in) {
     s::store(out, s::convert_saturate<std::uint32_t>(s::load<V>(in), s::Rounding::NearestEven));
 }
 #undef CONVERSION
+std::uint64_t SELECTION(float *out, float const *a, float const *b) {
+    using V = s::Batch<float, s::abi::sse2>;
+    static_assert(sizeof(V::mask_type) == 16 && alignof(V::mask_type) == 16);
+    auto x = s::load<V>(a), y = s::load<V>(b);
+    auto mask = (x < y) | (x == V{});
+    s::store(out, s::select(mask, y, x));
+    return s::detail::MaskAccess::bits(mask);
+}
+#undef SELECTION

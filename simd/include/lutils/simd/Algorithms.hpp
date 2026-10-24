@@ -64,12 +64,17 @@ LUTILS_SIMD_INLINE std::size_t copyIf(T const *input, std::size_t n, T *output,
                 written += packed.count;
             }
         } else
-            written += compress_store(output + written, values, predicate(values));
+            written += compressStore(output + written, values, predicate(values));
         i += V::size;
     }
     if (i < n) {
         auto values = load_partial<V>(input + i, n - i);
-        written += compress_store(output + written, values, predicate(values) & first_n<V>(n - i));
+        auto selected = predicate(values);
+        // The tail has fewer than V::size writable elements. Keep that bound
+        // explicit instead of relying on the optimizer to infer it from a mask.
+        for (std::size_t lane = 0; lane < n - i; ++lane)
+            if (selected.lane(lane))
+                output[written++] = values.lane(lane);
     }
     return written;
 }

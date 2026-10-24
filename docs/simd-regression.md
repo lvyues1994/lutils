@@ -32,6 +32,7 @@ uv run --no-project --offline --python '>=3.12' tools/simd/pair.py compare \
 | `filters` | u8/u16/u32/u64，精确写入与允许覆盖尾部两种过滤策略 |
 | `extended` | 上述过滤与 float → i32/u32 四种饱和舍入 |
 | `primitives` | 原有通用原语与 HostFrame 图像转换 |
+| `composition` | 整数 min/max、比较与选择、浮点交织、整数分组归约、FMA；分别记录库实现与同 ISA intrinsic 参考 |
 | `va` | VA 资源，含映射、计算、结束访问 |
 | `dma` | `/dev/dma_heap/system` 分配的真实 DMA buffer |
 | `ahb` | Android AHB BLOB |
@@ -65,6 +66,7 @@ Android 使用相同 NDK 分别构建两份源码，在 capture 中追加 `--ser
 
 因此内核或 microcode 升级后，只需在升级后的机器上重新构建并测量两个版本；
 同一次 session 内的环境变化仍然不允许。`selected_target` 是结果，不是用例身份。
+`implementation` 区分库实现和 intrinsic 参考，两者分别做前后比较，不能混为同一个用例。
 
 一个块用四个进程各自的中位数计算
 `sqrt(after₁ × after₂ / (before₁ × before₂))`，实现使用对数避免乘法溢出。

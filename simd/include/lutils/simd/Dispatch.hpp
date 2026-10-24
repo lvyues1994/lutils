@@ -21,6 +21,8 @@ template <class R, class... Args> struct DispatchTable<R(Args...)> {
     Function sse2 = nullptr;
     Function avx2 = nullptr;
     Function neon = nullptr;
+    // Optional specialization, compiled separately with AVX2 and FMA enabled.
+    Function avx2Fma = nullptr;
 };
 template <class Signature> struct SelectedFunction {
     Target target;
@@ -44,7 +46,7 @@ std::optional<SelectedFunction<Signature>> resolve(DispatchTable<Signature> cons
             function = table.sse2;
             break;
         case Target::Avx2:
-            function = table.avx2;
+            function = table.avx2Fma && cpu_features().fma ? table.avx2Fma : table.avx2;
             break;
         case Target::Neon:
             function = table.neon;

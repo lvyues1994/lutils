@@ -3,6 +3,7 @@
 #include <array>
 #include <cfenv>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <lutils/simd.hpp>
 #include <memory>
@@ -14,6 +15,7 @@
 #endif
 
 namespace simd_test {
+namespace {
 namespace s = lutils::simd;
 inline void check(bool condition) {
     if (!condition)
@@ -228,6 +230,12 @@ template <class T, class A> void masksAndMemory() {
         s::store_partial(p, sequence, n);
         auto v = s::load_partial<V>(p, n);
         check(s::count(v == sequence) == n);
+        s::MemoryView<T> view{p, n};
+        auto checked = s::load_partial<V>(view);
+        check(checked.count == n && s::count(checked.valid) == n);
+        check(s::store_partial(view, sequence) == n);
+        check(bool(s::try_load<V>(view)) == (n == V::size));
+        check(s::try_store(view, sequence) == (n == V::size));
         check(s::compress_store(p, sequence, s::first_n<V>(n)) == n);
         typename V::mask_type suffix;
         for (std::size_t i = 0; i < V::size; ++i)
@@ -236,6 +244,11 @@ template <class T, class A> void masksAndMemory() {
         for (std::size_t i = 0; i < n; ++i)
             check(p[i] == sequence.lane(V::size - n + i));
     }
+    s::MemoryView<T> inaccessible{reinterpret_cast<T *>(guard), 0};
+    check(!s::try_load<V>(inaccessible));
+    check(!s::try_store(inaccessible, sequence));
+    check(s::load_partial<V>(inaccessible).count == 0);
+    check(s::store_partial(inaccessible, sequence) == 0);
     // The last incomplete input block must never trigger a complete vector store.
     for (auto write : {s::FilterWrite::Exact, s::FilterWrite::AllowOverwrite})
         for (std::size_t n = 1; n <= 3 * V::size + 1; ++n)
@@ -282,23 +295,29 @@ template <class T, class A> void rearrange() {
 }
 template <class T, class A> void floating() {
     using V = s::Batch<T, A>;
-    T const values[]{T{},
-                     -T{},
-                     T{1},
-                     T{-1},
-                     std::numeric_limits<T>::infinity(),
-                     -std::numeric_limits<T>::infinity(),
-                     std::numeric_limits<T>::quiet_NaN(),
-                     std::numeric_limits<T>::denorm_min()};
-    for (auto a : values)
-        for (auto b : values) {
+    T const volatile values[]{T{},
+                              -T{},
+                              T{1},
+                              T{-1},
+                              std::numeric_limits<T>::infinity(),
+                              -std::numeric_limits<T>::infinity(),
+                              std::numeric_limits<T>::quiet_NaN(),
+                              std::numeric_limits<T>::denorm_min()};
+    // An independent ordering oracle also avoids GCC 13 misfolding assertions
+    // that compare canonical masks with the same floating expression twice.
+    // -inf < -1 < +/-0 < denorm_min < 1 < +inf; entry 6 is unordered.
+    int const ranks[]{2, 2, 4, 1, 5, 0, 0, 3};
+    for (std::size_t i = 0; i < std::size(values); ++i)
+        for (std::size_t j = 0; j < std::size(values); ++j) {
+            auto a = values[i], b = values[j];
+            bool ordered = i != 6 && j != 6;
             V x{a}, y{b};
-            check(s::all(x == y) == (a == b));
-            check(s::all(x != y) == (a != b));
-            check(s::all(x < y) == (a < b));
-            check(s::all(x > y) == (a > b));
-            check(s::all(x <= y) == (a <= b));
-            check(s::all(x >= y) == (a >= b));
+            check(s::all(x == y) == (ordered && ranks[i] == ranks[j]));
+            check(s::all(x != y) == (!ordered || ranks[i] != ranks[j]));
+            check(s::all(x < y) == (ordered && ranks[i] < ranks[j]));
+            check(s::all(x > y) == (ordered && ranks[i] > ranks[j]));
+            check(s::all(x <= y) == (ordered && ranks[i] <= ranks[j]));
+            check(s::all(x >= y) == (ordered && ranks[i] >= ranks[j]));
             auto plus = (x + y).lane(0), product = (x * y).lane(0);
             check((plus == a + b) || (std::isnan(plus) && std::isnan(a + b)));
             check((product == a * b) || (std::isnan(product) && std::isnan(a * b)));
@@ -389,6 +408,7 @@ template <class T, class A> void type() {
     else
         floating<T, A>();
 }
+#include "Evolution.hpp"
 #include "MoreContracts.hpp"
 template <class A> void run() {
     type<std::uint8_t, A>();
@@ -404,5 +424,7 @@ template <class A> void run() {
     conversions<A>();
     algorithms<A>();
     moreContracts<A>();
+    evolutionContracts<A>();
 }
+} // namespace
 } // namespace simd_test

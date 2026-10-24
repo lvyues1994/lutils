@@ -30,19 +30,25 @@ LUTILS_SIMD_INLINE Compressed<Batch<T, A>> compress(Batch<T, A> value,
             out.values.set_lane(out.count++, value.lane(i));
     return out;
 }
+namespace detail {
+// The caller provides a valid output range. Keep pointer validation at the
+// public boundary so algorithms with validated output do not repeat it.
 template <class T, class A>
-LUTILS_SIMD_INLINE std::size_t compress_store(T *out, Batch<T, A> value,
-                                              Mask<T, A> selected) noexcept {
-    assert(out || none(selected));
-    if (none(selected))
+LUTILS_SIMD_INLINE std::size_t compressStore(T *out, Batch<T, A> value,
+                                          Mask<T, A> selected) noexcept {
+    // This is the scalar decision boundary. Reuse one compact mask for the
+    // empty/full checks and the two-lane store instead of extracting lanes again.
+    auto bits = detail::MaskAccess::bits(selected);
+    if (!bits)
         return 0;
-    if (all(selected)) {
+    assert(out);
+    if (bits == detail::validMaskBits<Batch<T, A>::size>) {
         std::memcpy(out, detail::Access::data(value), sizeof(T) * value.size);
         return value.size;
     }
     if constexpr (std::is_same_v<A, abi::neon> && sizeof(T) == 8) {
         // Two lanes and a partial nonempty mask: exactly one element survives.
-        auto element = selected.lane(0) ? value.lane(0) : value.lane(1);
+        auto element = (bits & 1) ? value.lane(0) : value.lane(1);
         std::memcpy(out, &element, sizeof(T));
         return 1;
     }
@@ -95,8 +101,20 @@ LUTILS_SIMD_INLINE std::size_t compress_store(T *out, Batch<T, A> value,
     }
     std::size_t written = 0;
     for (std::size_t i = 0; i < value.size; ++i)
-        if (selected.lane(i))
+        if ((bits >> i) & 1)
             out[written++] = value.lane(i);
     return written;
+}
+} // namespace detail
+template <class T, class A>
+LUTILS_SIMD_INLINE std::size_t compress_store(T *out, Batch<T, A> value,
+                                           Mask<T, A> selected) noexcept {
+    // GCC's fortified memcpy diagnostics require the explicit null branch even
+    // when an empty canonical mask makes every store unreachable.
+    if (!out) {
+        assert(none(selected));
+        return 0;
+    }
+    return detail::compressStore(out, value, selected);
 }
 } // namespace lutils::simd

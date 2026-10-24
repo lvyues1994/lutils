@@ -1,5 +1,140 @@
 # SIMD 性能测试
 
+## 向量基础层、掩码组合与逻辑宽度
+
+2026-10-24，以 `be4b908` 为基线，保持 C++17、自主封装。新增 `composition` 基准：
+同一数据分别运行库实现和独立手写 intrinsic，用于区分算法收益与封装开销。
+两份源码使用当前同一份 harness、相同工具链和编译参数；各 ISA 单独编译，关闭 LTO。
+
+### 实现与契约
+
+- 引入私有编译器向量基础层，覆盖整数 min/max、比较选择、整数归约和通用交织；保留实测更合适的 ISA 特化。
+- Mask 保存规范的零/全一 lane，比较结果直接进入 select；查询及压缩写出时才提取紧凑位掩码。
+  压缩写出复用一次提取结果。保留 x86 无符号比较的 signed-bias intrinsic，避免编译器生成更多指令。
+- 新增 `Vec<T,N,A>`、保留逻辑元素数量的 rebind、静态 permute、concat/extract/split，以及带容量的 MemoryView。
+  整数求和保持模运算语义；浮点归约顺序、精确过滤边界及 NaN 语义不变。
+- DispatchTable 增加可选 AVX2+FMA 实现槽，按独立 CPU 能力选择。既有 FMA 内核已经能生成融合指令，
+  本轮不把新增调度入口计为 FMA 算子加速。
+
+`Mask` 与 `DispatchTable` 布局改变，下游需要整体重新编译。详细接口见 [SIMD 设计](simd.md)。
+
+### 测量方法
+
+PC 为 i7-13700KF、GCC 13.3、逻辑 CPU 2；Android 为 SM8750P、Android 16/API 36、NDK r28c/Clang 19、CPU 7。
+不修改调频或设备设置。每组五个 ABBA/BAAB 块，每版十个独立进程；每项预热 50 ms，九组计时样本。
+尺寸覆盖 4096/4099/262144 元素，指针偏移一个元素；过滤另测 0/50/100% 命中，图像另测布局与 stride。
+每次执行均核对输出和写出边界。单进程执行预算 45 秒。
+
+下表单位为 µs/调用、262144 元素。耗时是十个进程中位数的中位数；加速比是五个块配对比值中位数的倒数。
+“通过”表示未触发 5% 退化门槛；波动超过既有 3% 噪声标准时标为“无法确定”，不能据中位数宣称稳定收益。
+
+| 平台 / 算子 | 优化前 | 优化后 | 配对加速比 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC AVX2 / min_i32 | 156.935 | 39.094 | 3.85× | 无法确定 |
+| PC AVX2 / max_u32 | 456.728 | 39.394 | 11.61× | 无法确定 |
+| PC AVX2 / select_f32 | 450.028 | 63.973 | 6.98× | 无法确定 |
+| PC AVX2 / interleave_f32 | 275.418 | 63.265 | 4.27× | 无法确定 |
+| PC AVX2 / deinterleave_f32 | 289.630 | 90.874 | 3.17× | 无法确定 |
+| PC AVX2 / reduce_u32_block8 | 23.934 | 14.967 | 1.60× | 通过 |
+| Android NEON / min_i32 | 1132.474 | 46.093 | 24.54× | 通过 |
+| Android NEON / max_u32 | 1134.193 | 46.539 | 24.44× | 通过 |
+| Android NEON / select_f32 | 132.300 | 77.711 | 1.71× | 通过 |
+| Android NEON / select_i32 | 102.836 | 77.546 | 1.33× | 通过 |
+| Android NEON / reduce_u32_block8 | 26.308 | 21.747 | 1.22× | 通过 |
+
+### 与手写 intrinsic 的差距
+
+Android NEON，262144 元素，单位 µs/调用：
+
+| 算子 | 本轮库实现 | 手写 intrinsic |
+| --- | ---: | ---: |
+| min_i32 | 46.093 | 46.213 |
+| select_f32 | 77.711 | 78.057 |
+| interleave_f32 | 81.133 | 60.869 |
+| deinterleave_f32 | 130.061 | 63.269 |
+| reduce_u32_block8 | 21.747 | 17.856 |
+| fma_f32 | 63.287 | 63.358 |
+
+NEON 浮点交织和解交织仍受 Batch 值传递与数组存储边界影响。私有汇编探针显示，
+仅替换 shuffle builtin 不能消除逐 lane 搬运；将整条 load/操作/store 改为引用接口才会生成连续 Q 寄存器加载。
+本轮保持既定值接口与 constexpr 存储契约，因此没有宣称消除这部分开销。
+逻辑固定宽度本轮覆盖正确性；上述性能表测量原生宽度。
+
+### 过滤回归
+
+262144 元素、默认精确写出，单位 µs/调用：
+
+| 平台 / 类型 / 命中率 | 优化前 | 优化后 | 变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC AVX2 / u8 / 50% | 40.461 | 40.542 | +0.1% | 通过 |
+| PC AVX2 / u16 / 50% | 70.163 | 69.673 | -1.3% | 通过 |
+| PC AVX2 / u32 / 50% | 34.338 | 34.098 | -0.5% | 通过 |
+| PC AVX2 / u64 / 50% | 120.837 | 120.084 | -0.8% | 通过 |
+| PC SSE2 / u64 / 50% | 591.290 | 643.880 | +8.7% | 退化 |
+| Android NEON / u8 / 50% | 250.714 | 242.549 | -4.1% | 通过 |
+| Android NEON / u64 / 50% | 844.674 | 837.826 | -0.4% | 通过 |
+| Android NEON / u8 / 0% | 13.630 | 15.133 | +11.0% | 退化 |
+| Android SCALAR / u8 / 0% | 85.538 | 98.162 | +14.7% | 退化 |
+
+PC 的 23 项确认退化包括 SSE2 18 项和 AVX2 5 项；AVX2 的 5 项均来自允许覆盖模式。
+Android 的 26 项包括 Scalar 空掩码 23 项，以及 NEON u8 精确空掩码 3 项。
+这些结果采用原有阈值，完整性能门禁未通过。宽掩码减少比较到选择的开销，但并未让所有提取和分支路径都更快。
+已消除实证的掩码重复提取、逐 lane 栈搬运及无效寄存器往返；剩余差异仍保留在最终矩阵中。
+
+### 图像与既有原语
+
+两台机器的 primitives 矩阵均无确认退化。1920×1536、预先创建计划后的单帧执行，单位 ms：
+
+| 平台 / 转换 | 优化前 | 优化后 | 判定 |
+| --- | ---: | ---: | --- |
+| PC AVX2 / uyvy_nv12 | 0.185 | 0.184 | 通过 |
+| PC AVX2 / nv12_rgba | 1.702 | 1.702 | 通过 |
+| Android NEON / uyvy_nv12 | 0.154 | 0.157 | 通过 |
+| Android NEON / nv12_rgba | 1.306 | 1.306 | 通过 |
+
+这些是 CPU 可访问的 HostFrame 测量，不包含 DMA/AHB 端到端计时；Android 资源映射另有正确性回归。
+
+### 完整矩阵与证据
+
+| 平台 / 套件 | 通过 | 退化 | 无法确定 |
+| --- | ---: | ---: | ---: |
+| linux-composition | 93 | 0 | 27 |
+| linux-filters | 153 | 23 | 40 |
+| linux-primitives | 207 | 0 | 18 |
+| android-composition | 70 | 1 | 1 |
+| android-filters | 102 | 26 | 16 |
+| android-primitives | 163 | 0 | 5 |
+
+共 945 项：788 项通过、50 项确认退化、107 项无法确定。50 项中有 49 项过滤用例，
+另 1 项是 Android 手写 intrinsic 对照组的 4099 元素解交织（约 +6.0%）；其源码相同，仍保留判定。
+PC 组合算子的部分中位数明显下降，但波动超过标准，因此表中未把它们标为稳定收益。
+两台机器的图像与原有原语套件均无确认退化。没有调宽门槛、删去失败项或把未完成的采集纳入结果。
+
+[汇总与归档校验和](data/simd/vector-foundation/summary.json) ·
+[PC 组合算子](data/simd/vector-foundation/linux-composition.json) ·
+[PC 过滤](data/simd/vector-foundation/linux-filters.json) ·
+[PC 原语与图像](data/simd/vector-foundation/linux-primitives.json) ·
+[Android 组合算子](data/simd/vector-foundation/android-composition.json) ·
+[Android 过滤](data/simd/vector-foundation/android-filters.json) ·
+[Android 原语与图像](data/simd/vector-foundation/android-primitives.json)。
+
+Git 中只保存紧凑报告。原始 JSONL、manifest、stderr、源码补丁、编译参数、汇编探针及测试日志保存在
+本地 `.local-artifacts/simd/vector-foundation.tar.gz`；其中也保留中间退化版本与主动中止的诊断采集。
+最终报告仅使用 `linux-composition` 与 `linux-release-*`、`android-release-*` 的完整采集。
+Linux 组合基准与最终二进制逐字节一致；其 SHA-256 已核对。复现流程见 [配对回归工具](simd-regression.md)。
+
+### 正确性验证
+
+Linux 全量回归 63 项通过，1 项因缺少 DMA heap 跳过；Clang 18 ASan/UBSan/LeakSanitizer 与
+关闭编译器向量层的通用回退各 30 项通过。NDK r28 构建和 12 项编译拒绝测试通过；Android 真机
+Scalar/NEON、调度、图像、资源映射和调优回归通过。
+
+测试覆盖所有整数宽度、浮点 NaN/正负零/无穷/次正规数、固定宽度 1/3/7/8/9/19/64、
+保护页边界、非法静态索引和混合 ISA 编译单元。AVX2 与 AVX2+FMA 测试模板采用内部链接，避免被链接器合并。
+浮点比较使用独立的整数排序表与 NaN 分类作为预期值，并从 volatile 输入读取实际测试值。
+无库最小复现表明 GCC 13 会错误折叠原先重复同一浮点表达式的断言；复现和编译器输出保留在归档中，
+未关闭优化 pass，也未改变 NaN 或正负零契约。
+
 ## Review 修复：过滤写出、小预算与配对回归
 
 2026-10-18，以未推送的 `843d1de` 为基线。前后使用相同基准源码、编译参数和数据，

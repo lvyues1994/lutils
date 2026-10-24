@@ -80,13 +80,12 @@ LUTILS_SIMD_INLINE Batch<To, A> narrow_truncate(WideParts<Batch<From, A>, N> con
 }
 template <class To, class From, class A,
           std::enable_if_t<std::is_integral_v<To> && std::is_floating_point_v<From>, int> = 0>
-LUTILS_SIMD_INLINE Batch<To, A> convert_saturate(Batch<From, A> value, Rounding rounding) noexcept {
-    Batch<To, A> out;
-    static_assert(out.size == value.size,
-                  "convert requires equal lane counts; widen/narrow separately");
+LUTILS_SIMD_INLINE rebind_t<To, Batch<From, A>> convert_saturate(Batch<From, A> value,
+                                                                 Rounding rounding) noexcept {
+    rebind_t<To, Batch<From, A>> out;
     if constexpr (detail::FloatToIntegerNative<To, From, A>::available) {
-        detail::FloatToIntegerNative<To, From, A>::run(
-            detail::Access::data(out), detail::Access::data(value), rounding);
+        detail::FloatToIntegerNative<To, From, A>::run(detail::Access::data(out),
+                                                       detail::Access::data(value), rounding);
         return out;
     }
     constexpr auto low = std::numeric_limits<To>::lowest(), high = std::numeric_limits<To>::max();
@@ -132,11 +131,11 @@ LUTILS_SIMD_INLINE Batch<To, A> convert_saturate(Batch<From, A> value, Rounding 
 }
 template <class To, class From, class A,
           std::enable_if_t<std::is_floating_point_v<To> && std::is_integral_v<From>, int> = 0>
-LUTILS_SIMD_INLINE Batch<To, A> convert(Batch<From, A> value) noexcept {
-    Batch<To, A> out;
-    static_assert(out.size == value.size, "convert requires equal lane counts");
+LUTILS_SIMD_INLINE rebind_t<To, Batch<From, A>> convert(Batch<From, A> value) noexcept {
+    rebind_t<To, Batch<From, A>> out;
     if constexpr (detail::ConvertNative<To, From, A>::available) {
-        detail::ConvertNative<To, From, A>::run(detail::Access::data(out), detail::Access::data(value));
+        detail::ConvertNative<To, From, A>::run(detail::Access::data(out),
+                                                detail::Access::data(value));
         return out;
     }
     for (std::size_t i = 0; i < value.size; ++i)
@@ -144,10 +143,10 @@ LUTILS_SIMD_INLINE Batch<To, A> convert(Batch<From, A> value) noexcept {
     return out;
 }
 template <class To, class From, class A>
-LUTILS_SIMD_INLINE Batch<To, A> bit_cast(Batch<From, A> value) noexcept {
-    Batch<To, A> out;
-    static_assert(sizeof(To) * out.size == sizeof(From) * value.size,
-                  "bit_cast requires equal byte counts");
+LUTILS_SIMD_INLINE auto bit_cast(Batch<From, A> value) noexcept {
+    constexpr auto bytes = sizeof(From) * Batch<From, A>::size;
+    static_assert(bytes % sizeof(To) == 0, "bit_cast requires divisible byte counts");
+    detail::Resized<To, bytes / sizeof(To), A> out;
     std::memcpy(detail::Access::data(out), detail::Access::data(value), sizeof(To) * out.size);
     return out;
 }

@@ -48,7 +48,7 @@ def read_run(path):
     return cases
 
 
-KEYS = ("operation", "target", "scope", "elements", "width", "height",
+KEYS = ("operation", "target", "implementation", "scope", "elements", "width", "height",
         "row_alignment", "element_offset", "positive_percent", "memory", "split")
 
 

@@ -41,13 +41,17 @@ LUTILS_SIMD_INLINE Batch<T, A> operator~(Batch<T, A> v) noexcept {
 }
 template <class T, class A>
 LUTILS_SIMD_INLINE Mask<T, A> operator==(Batch<T, A> a, Batch<T, A> b) noexcept {
-    return detail::MaskAccess::from<T, A>(
-        detail::Ops<T, A>::equal(detail::Access::data(a), detail::Access::data(b)));
+    Mask<T, A> out;
+    detail::Ops<T, A>::equalWide(detail::MaskAccess::data(out), detail::Access::data(a),
+                                 detail::Access::data(b));
+    return out;
 }
 template <class T, class A>
 LUTILS_SIMD_INLINE Mask<T, A> operator<(Batch<T, A> a, Batch<T, A> b) noexcept {
-    return detail::MaskAccess::from<T, A>(
-        detail::Ops<T, A>::less(detail::Access::data(a), detail::Access::data(b)));
+    Mask<T, A> out;
+    detail::Ops<T, A>::lessWide(detail::MaskAccess::data(out), detail::Access::data(a),
+                                detail::Access::data(b));
+    return out;
 }
 template <class T, class A>
 LUTILS_SIMD_INLINE Mask<T, A> operator!=(Batch<T, A> a, Batch<T, A> b) noexcept {
@@ -76,6 +80,8 @@ LUTILS_SIMD_INLINE Mask<T, A> operator>=(Batch<T, A> a, Batch<T, A> b) noexcept 
 LUTILS_SIMD_NAMED(add_saturate, addSaturate, std::is_integral_v<T>)
 LUTILS_SIMD_NAMED(sub_saturate, subSaturate, std::is_integral_v<T>)
 LUTILS_SIMD_NAMED(average_round_up, average, std::is_unsigned_v<T>)
+LUTILS_SIMD_NAMED(min, min, std::is_integral_v<T>)
+LUTILS_SIMD_NAMED(max, max, std::is_integral_v<T>)
 #undef LUTILS_SIMD_NAMED
 template <class T, class A, std::enable_if_t<std::is_integral_v<T>, int> = 0>
 LUTILS_SIMD_INLINE Batch<T, A> shift_left(Batch<T, A> a, unsigned n) noexcept {
@@ -114,14 +120,6 @@ LUTILS_SIMD_INLINE Batch<T, A> shift_right_arithmetic(Batch<T, A> a, unsigned n)
         out.set_lane(i, detail::wrap<T>(shifted));
     }
     return out;
-}
-template <class T, class A, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-LUTILS_SIMD_INLINE Batch<T, A> min(Batch<T, A> a, Batch<T, A> b) noexcept {
-    return select(a < b, a, b);
-}
-template <class T, class A, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-LUTILS_SIMD_INLINE Batch<T, A> max(Batch<T, A> a, Batch<T, A> b) noexcept {
-    return select(a > b, a, b);
 }
 template <class T, class A, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 LUTILS_SIMD_INLINE Batch<T, A> fma(Batch<T, A> a, Batch<T, A> b, Batch<T, A> c) noexcept {

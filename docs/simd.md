@@ -17,7 +17,10 @@
 运行时调度另外包含 `<lutils/simd/Dispatch.hpp>` 并链接 `lutils::simd_dispatch`。
 图像入口包含 `<lutils/image/SimdConversion.hpp>` 并链接 `lutils::image_simd`。
 
-内部由 `detail/Scalar.hpp` 定义标量语义，`Sse2.hpp`、`Avx2.hpp`、`Neon.hpp` 提供原生操作。
+内部由 `detail/Scalar.hpp` 定义标量语义，`detail/Vector.hpp` 提供 GCC/Clang 向量基础层，
+`Sse2.hpp`、`Avx2.hpp`、`Neon.hpp` 保留按 ISA 优化的操作。
+比较、选择、整数 min/max、整数归约和通用交织优先使用向量表达；缺少编译器能力时回退到标量语义。
+这借鉴了《std::simd Without Compromise》的编译器基础层、通用实现、架构特化三层结构。
 公共算法不接触 intrinsic 类型。`Batch` 使用对齐的固定存储，操作可以内联为寄存器指令；
 值类型与基础操作不分配堆内存。图像入口复用 FrameView 的格式、容量和 stride 校验。
 
@@ -28,15 +31,41 @@
 默认构造为零，显式标量构造广播；`size` 为元素数，lane 0 对应最低地址。
 使用 `lane(i)` / `set_lane(i, value)` 访问元素，索引必须小于 size。
 
+`Vec<T, N, NativeAbi>` 是 `Batch<T, abi::fixed<N, NativeAbi>>` 的别名，支持 1..64 个逻辑元素。
+完整块使用指定原生 ABI，不足一块的算术按实际元素计算，避免浮点补零引入额外异常。
+省略 NativeAbi 时使用 Scalar；对象布局不随当前编译选项变化。内部存储可能有对齐 padding，
+内存接口只复制逻辑元素。`rebind_t<To, V>` 改变元素类型并保留元素数量；
+数量恰好匹配目标类型的原生宽度时使用原生 ABI，否则使用 fixed ABI，不保证保留原 ABI 标签。
+
 - `load<V>` / `store` 允许未按向量宽度对齐的地址；地址仍须满足元素 T 的对齐要求。
 - `load_aligned` / `store_aligned` 另要求地址按 `V::alignment` 对齐。
 - `load_partial<V>(p, n, fill)` 只读取 n 个元素，其余填 fill；`store_partial` 只写 n 个。
   n 必须不超过 size。n 为零时允许空指针，不做指针运算或内存访问。
 - `Mask<T, Abi>` 每个元素一个布尔值，不隐式转换为 bool。使用 `any/all/none/count/first_true`；
   空 mask 的 first_true 返回 nullopt。`first_n<V>(n)` 标记前 n 个有效元素。
+  内部保存零/全一的同位宽 lane；比较到选择保持向量形式，需要标量结果的掩码查询及压缩时提取位掩码。
+  构造、逐 lane 修改和掩码逻辑仍支持 C++17 constexpr。
 - `select(mask, yes, no)` 在已求值的两个 Batch 之间选择，不能保护分支里的非法访问。
 - `compress` 返回稳定排列的 values 和 count；尾部清零。
   `compress_store` 只写选中的元素，返回实际数量；空 mask 允许空输出指针。
+
+本次 `Mask` 的大小和对齐已改变，`DispatchTable` 也因新增 `avx2Fma` 槽而改变大小。
+使用方须完整重新编译，包括创建和消费调度表的代码；不要持久化这些对象的字节或跨不同版本交换对象。
+
+### 带长度的内存接口
+
+`MemoryView<T>{pointer, count}` 借用一段元素范围；调用方负责实际容量、元素对齐和生命周期。
+零长度允许空指针。它在原始指针 API 之上提供边界检查，不分配内存：
+
+| 接口 | 行为 |
+| --- | --- |
+| `try_load<V>(view, offset)` | 剩余元素不足时返回 nullopt |
+| `try_store(view, value, offset)` | 容量不足返回 false，不写入 |
+| `load_partial<V>(view, offset, fill)` | 返回 value、valid mask、count，最多读取 V::size 个元素 |
+| `store_partial(view, value, offset)` | 最多写入剩余容量，返回实际数量 |
+
+offset 默认为零；到达或超过范围末端的 partial 操作返回零个元素，不做空指针运算。
+热循环仍可使用原始指针接口处理完整块，尾部使用 partial 接口。
 
 ## 运算契约
 
@@ -48,42 +77,48 @@
 | `shift_left/shift_right_logical` | 移位量达到位宽时为零 |
 | `shift_right_arithmetic` | 仅有符号整数；大移位量填满符号位 |
 | 浮点 `+ - * /` | 默认舍入环境；普通乘加分别舍入 |
-| `fma(a,b,c)` | 融合乘加，单次舍入；目前逐 lane 调用 std::fma |
+| `fma(a,b,c)` | 融合乘加，单次舍入；编译器可将 std::fma 表达映射到支持的向量 FMA |
 | 比较 | NaN 的相等、有序比较为 false，不等为 true |
 | `min/max/reduce_min/reduce_max` | 当前仅提供整数版本 |
 
 不启用 fast-math。CMake 的 simd 目标向使用方传递 `-ffp-contract=off`，以维持普通乘加语义；
 直接使用头文件时也须设置该选项。FTZ/DAZ 等浮点状态由调用方控制；不规定 NaN payload 和异常标志跨架构一致。
 整数除法、FP16 和浮点 min/max 尚未提供。
+整数归约允许树形模运算；浮点 reduce_sum 仍从零开始按 lane 顺序累加，不重关联。
 
 `interleave(a,b)` 返回 low/high，顺序是完整的 `[a0,b0,a1,b1,...]`；
 `deinterleave(a,b)` 从拼接的 `[a,b]` 抽取 even/odd。
 AVX2 的顺序跨越整个 256 位，不按两个 128 位半区分别排列。
 `shuffle<I...>` 显式指定全部输出索引；`rotate_left<N>` 在完整 Batch 内循环移动。
+`permute<M, Index>(a)` 或 `permute<M, Index>(a,b)` 用 constexpr 函数描述索引公式。
+索引在编译期固化并检查整数类型、非负和上界；双输入从 `[a,b]` 取值。
+`concat(a,b)` 拼接同底层 ABI 的向量；`extract<Offset,N>` 提取子段；`split<N>` 返回 low/high 两个非空部分。
+结果按逻辑元素数量选择原生或 fixed ABI，总元素数不超过 64。
 
 `widen<To>` 保留所有输入元素，返回 `WideParts` 中按顺序排列的多个 Batch；
 整数 widening 保持符号性。`narrow_saturate<To>` 与 `narrow_truncate<To>` 接受完整 parts，
 分别饱和或保留低位。`convert_saturate<To>` 为浮点到整数，显式选择四种舍入方式，
-NaN 转零，无穷及越界值钳位。`convert<To>` 为整数到浮点；两者要求 lane 数相同。
-`bit_cast<To>` 保留全部字节，要求源目标总字节数相同。
+NaN 转零，无穷及越界值钳位。`convert<To>` 为整数到浮点；两者返回 rebind_t，保持输入 lane 数，
+跨元素位宽时可返回 fixed ABI。fixed 向量的 widen 返回仅含一个较宽 Batch 的 WideParts，保存全部逻辑元素。
+`bit_cast<To>` 保留全部元素字节，按新元素大小调整 lane 数；字节数必须整除 sizeof(To)，结果不超过 64 lane。
 
 原生后端优先提供算术、比较和位运算；x86 字节交织/解交织、8/16 位饱和与平均使用 intrinsic，
-NEON 提供原生交织和解交织。缺失指令使用统一标量回退，例如 SSE2 的 64 位比较、
-8/64 位整数乘法。相邻整数位宽的扩宽、常用饱和缩窄、16/32 位算术右移，以及
+NEON 提供原生交织和解交织。缺失指令由编译器向量基础层或统一标量路径处理，例如
+SSE2 的 64 位比较、8/64 位整数乘法。相邻整数位宽的扩宽、常用饱和缩窄、16/32 位算术右移，以及
 x86 的 16 位交织已有原生路径。AVX2/NEON 的 8/16/32/64 位元素压缩用查表和原生重排，保持稳定顺序及尾部清零。
 NEON 的 i32/u32 → float 使用原生转换；SSE2、AVX2、NEON 的 float → i32/u32 饱和转换
 支持四种显式舍入方式，不改变调用方的浮点舍入模式。
-x86 的 16 位比较先压缩到字节再提取掩码，32/64 位直接提取每个 lane 的符号位；
-NEON 的 8/16/32 位比较采用位权归约，64 位直接提取两个 lane。
+提取紧凑掩码时，x86 的 16 位 lane 先压缩到字节，32/64 位直接提取符号位；
+NEON 的 8/16/32 位 lane 采用位权归约，64 位直接提取两个 lane。
 AVX2 的 32/64 位 `compress_store` 使用精确掩码写出。
 NEON 压缩写入使用定长拷贝，64 位部分掩码直接选取唯一元素，仍只写实际选中的元素。
-其他转换、归约和通用 shuffle 保留通用实现；具体是否生成向量指令取决于编译器。
+其他转换和通用 shuffle 保留通用实现；具体指令由编译器与 ISA 能力共同决定。
 
 ## 算法与调度
 
 `mismatch<T, Abi>` 和 `find_if<T, Abi>` 返回首个索引或 nullopt；
 `copy_if<T, Abi>` 返回写入数量，保持输入顺序。输出容量至少为输入长度；允许精确原位过滤，
-其他重叠不支持。长度为零允许空指针。尾部会叠加有效 lane mask，填充值不参与结果。
+其他重叠不支持。长度为零允许空指针。尾部只消费有效 lane，填充值不参与结果。
 默认四参调用及 `FilterWrite::Exact` 保持 `output[count, length)` 原值。
 第五参可显式传 `FilterWrite::AllowOverwrite`，允许该范围内容未指定；AVX2/NEON 对完整输入批次可整宽写出，
 最后不足一个向量的部分仍精确写入，不会越过 `output[length]`。两种策略都支持精确原位过滤。
@@ -97,11 +132,13 @@ auto count = s::copy_if<std::int32_t, s::abi::sse2>(
 ```
 
 这是 SSE2 编译单元中的例子。可运行的跨平台版本见 [examples/simd.cpp](../examples/simd.cpp)。
-各 ISA 的外部函数只传指针、长度、stride 等普通参数；不要跨 ISA 边界按值传递 Batch。
+各 ISA 的外部函数只传指针、长度、stride 等普通参数；不要跨 ISA 边界按值传递 Batch 或 Mask。
 
 运行时创建 `DispatchTable<Signature>`，为已编译实现填写函数指针，调用 `resolve(table, target)`。
 Automatic 按 AVX2、NEON、SSE2、Scalar 选择表中存在且 CPU 支持的实现；显式目标不可用时返回 nullopt。
 AVX2 还检查 OSXSAVE/XCR0，FMA 单独检测，不视为 AVX2 的隐含能力。
+可选 `DispatchTable::avx2Fma` 接收独立以 `-mavx2 -mfma` 编译的实现；只有 AVX2 与 FMA 同时可用才优先选择它，
+否则保留 avx2 槽或继续回退。SelectedFunction 的 target 仍是 Avx2；普通乘加继续遵守不融合契约。
 调度在算法入口进行，库不在每条 SIMD 操作中检测 CPU。
 
 ISA 编译选项只加在对应源文件上。不要全项目使用 `-march=native` 或 `-mavx2` 后期待 baseline 回退。
@@ -111,6 +148,10 @@ ISA 编译选项只加在对应源文件上。不要全项目使用 `-march=nati
 用户自己的算法模板也应在对应 ISA 的编译单元实例化，
 避免将同一个外部函数实例同时编译为不同指令集后合并。
 当前原生构建支持 Linux x86-64 的 GCC/Clang 和 AArch64 的 GCC/Clang（含 Android NDK r28）。
+
+验证通用回退时可定义 `LUTILS_SIMD_DISABLE_COMPILER_VECTOR`，关闭私有编译器向量层。
+这是预处理宏，不是 CMake 选项；须在整个构建中一致设置，避免同一模板出现不同定义。
+它保留已有 ISA 专用操作，其他操作回退到通用实现。
 
 ## 图像验证与基准
 

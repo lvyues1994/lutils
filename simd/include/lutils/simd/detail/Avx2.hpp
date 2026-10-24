@@ -1,5 +1,5 @@
 #pragma once
-#include <lutils/simd/detail/Scalar.hpp>
+#include <lutils/simd/detail/Vector.hpp>
 #if defined(__AVX2__)
 #include <immintrin.h>
 
@@ -19,7 +19,7 @@ template <class T> LUTILS_SIMD_INLINE std::uint64_t avxMask(__m256i v) noexcept 
     static LUTILS_SIMD_INLINE void NAME(T *o, T const *a, T const *b) noexcept {                   \
         write(o, INTRINSIC(read(a), read(b)));                                                     \
     }
-template <class T> struct AvxInteger : Emulated<T, abi::avx2> {
+template <class T> struct AvxInteger : CompilerOps<T, abi::avx2> {
     static LUTILS_SIMD_INLINE __m256i read(T const *p) noexcept {
         return _mm256_loadu_si256(reinterpret_cast<__m256i const *>(p));
     }
@@ -36,7 +36,7 @@ template <class T> struct AvxInteger : Emulated<T, abi::avx2> {
             write(lo, _mm256_permute2x128_si256(l, h, 0x20));
             write(hi, _mm256_permute2x128_si256(l, h, 0x31));
         } else
-            Emulated<T, abi::avx2>::zip(lo, hi, a, b);
+            CompilerOps<T, abi::avx2>::zip(lo, hi, a, b);
     }
 };
 template <class T, std::size_t Bytes> struct AvxWidth;
@@ -46,18 +46,16 @@ template <class T, std::size_t Bytes> struct AvxWidth;
         using AvxInteger<T>::write;                                                                \
         LUTILS_AVX_BINARY(add, _mm256_add_epi##SUFFIX)                                             \
         LUTILS_AVX_BINARY(sub, _mm256_sub_epi##SUFFIX)                                             \
-        static LUTILS_SIMD_INLINE std::uint64_t equal(T const *a, T const *b) noexcept {           \
-            return avxMask<T>(_mm256_cmpeq_epi##SUFFIX(read(a), read(b)));                         \
-        }                                                                                          \
-        static LUTILS_SIMD_INLINE std::uint64_t less(T const *a, T const *b) noexcept {            \
-            auto x = read(a), y = read(b);                                                         \
-            if constexpr (std::is_unsigned_v<T>) {                                                 \
-                auto sign = SIGN;                                                                  \
-                x = _mm256_xor_si256(x, sign);                                                     \
-                y = _mm256_xor_si256(y, sign);                                                     \
-            }                                                                                      \
-            return avxMask<T>(_mm256_cmpgt_epi##SUFFIX(y, x));                                     \
-        }                                                                                          \
+        static LUTILS_SIMD_INLINE void lessWide(MaskLane<T> *out, T const *a,                     \
+                                                T const *b) noexcept {                           \
+            auto x = read(a), y = read(b);                                                       \
+            if constexpr (std::is_unsigned_v<T>) {                                              \
+                x = _mm256_xor_si256(x, SIGN);                                                   \
+                y = _mm256_xor_si256(y, SIGN);                                                   \
+            }                                                                                   \
+            _mm256_storeu_si256(reinterpret_cast<__m256i *>(out),                                 \
+                                _mm256_cmpgt_epi##SUFFIX(y, x));                                 \
+        }                                                                                       \
     };
 LUTILS_AVX_WIDTH(1, 8, _mm256_set1_epi8(-128))
 LUTILS_AVX_WIDTH(2, 16, _mm256_set1_epi16(-32768))
@@ -116,7 +114,7 @@ template <> struct Ops<std::int32_t, abi::avx2> : AvxWidth<std::int32_t, 4> {
 template <> struct Ops<std::uint64_t, abi::avx2> : AvxWidth<std::uint64_t, 8> {};
 template <> struct Ops<std::int64_t, abi::avx2> : AvxWidth<std::int64_t, 8> {};
 #define LUTILS_AVX_FLOAT(TYPE, REG, SUFFIX)                                                        \
-    template <> struct Ops<TYPE, abi::avx2> : Emulated<TYPE, abi::avx2> {                          \
+    template <> struct Ops<TYPE, abi::avx2> : CompilerOps<TYPE, abi::avx2> {                       \
         using T = TYPE;                                                                            \
         static LUTILS_SIMD_INLINE REG read(T const *p) noexcept {                                  \
             return _mm256_loadu_##SUFFIX(p);                                                       \
@@ -128,14 +126,6 @@ template <> struct Ops<std::int64_t, abi::avx2> : AvxWidth<std::int64_t, 8> {};
         LUTILS_AVX_BINARY(sub, _mm256_sub_##SUFFIX)                                                \
         LUTILS_AVX_BINARY(mul, _mm256_mul_##SUFFIX)                                                \
         LUTILS_AVX_BINARY(div, _mm256_div_##SUFFIX)                                                \
-        static LUTILS_SIMD_INLINE std::uint64_t equal(T const *a, T const *b) noexcept {           \
-            return static_cast<unsigned>(                                                          \
-                _mm256_movemask_##SUFFIX(_mm256_cmp_##SUFFIX(read(a), read(b), _CMP_EQ_OQ)));      \
-        }                                                                                          \
-        static LUTILS_SIMD_INLINE std::uint64_t less(T const *a, T const *b) noexcept {            \
-            return static_cast<unsigned>(                                                          \
-                _mm256_movemask_##SUFFIX(_mm256_cmp_##SUFFIX(read(a), read(b), _CMP_LT_OQ)));      \
-        }                                                                                          \
     };
 LUTILS_AVX_FLOAT(float, __m256, ps)
 LUTILS_AVX_FLOAT(double, __m256d, pd)

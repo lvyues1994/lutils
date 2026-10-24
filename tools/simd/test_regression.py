@@ -63,6 +63,19 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["cases"][0]["after"]["selected_targets"], ["neon"] * 5)
 
+    def test_implementation_identity(self):
+        path = self.capture("implementations") / "run-0.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[1]["implementation"] = "library"
+        native = {**rows[1], "implementation": "intrinsic"}
+        rows.insert(2, native)
+        path.write_text("\n".join(json.dumps(x) for x in rows))
+        self.assertEqual(len(r.load_run(path, 2)[1]), 2)
+        rows[2]["implementation"] = "library"
+        path.write_text("\n".join(json.dumps(x) for x in rows))
+        with self.assertRaises(ValueError):
+            r.load_run(path, 2)
+
     def test_regression(self):
         result = r.compare(self.capture("a"), self.capture("b", 1.1))
         self.assertEqual(result["status"], "regression")

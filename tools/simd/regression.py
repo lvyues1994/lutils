@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 from report import KEYS, read_run
 
 SUITES = {
+    "composition": ("simd_composition_benchmark", []),
     "primitives": ("simd_benchmark", []),
     "extended": ("simd_extended_benchmark", []),
     "filters": ("simd_extended_benchmark", ["--filters"]),
