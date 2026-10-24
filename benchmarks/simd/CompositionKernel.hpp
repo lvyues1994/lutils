@@ -6,6 +6,15 @@
 namespace composition {
 namespace {
 namespace s = lutils::simd;
+// Both revisions use this harness. Older libraries use the value-returning API.
+template <class V, class T>
+LUTILS_SIMD_INLINE auto read(T const *p, V &out, int) -> decltype(s::load(p, out), void()) {
+    s::load(p, out);
+}
+template <class V, class T> LUTILS_SIMD_INLINE void read(T const *p, V &out, long) {
+    out = s::load<V>(p);
+}
+#include "FixedKernel.hpp"
 template <Operation Op, class T, class A>
 __attribute__((noinline, aligned(64))) std::uint64_t elementwise(Data const &data) {
     using V = s::Batch<T, A>;
@@ -43,11 +52,17 @@ __attribute__((noinline, aligned(64))) std::uint64_t rearrange(Operation op, Dat
     std::size_t i = 0;
     for (; data.size - i >= V::size; i += V::size) {
         if (op == Operation::Zip) {
-            auto pair = s::interleave(s::load<V>(a + i), s::load<V>(b + i));
+            V x, y;
+            read(a + i, x, 0);
+            read(b + i, y, 0);
+            auto pair = s::interleave(x, y);
             s::store(out + 2 * i, pair.low);
             s::store(out + 2 * i + V::size, pair.high);
         } else {
-            auto pair = s::deinterleave(s::load<V>(a + 2 * i), s::load<V>(a + 2 * i + V::size));
+            V x, y;
+            read(a + 2 * i, x, 0);
+            read(a + 2 * i + V::size, y, 0);
+            auto pair = s::deinterleave(x, y);
             s::store(out + i, pair.even);
             s::store(out + data.size + i, pair.odd);
         }
@@ -85,7 +100,13 @@ __attribute__((noinline, aligned(64))) std::uint64_t reduction(Data const &data)
 }
 template <class A>
 __attribute__((noinline, aligned(64))) std::uint64_t run(Operation op, Data const &data) {
+    if (data.lanes)
+        return fixedRun<A>(op, data);
     switch (op) {
+    case Operation::FixedAdd:
+    case Operation::FixedReverse:
+    case Operation::FixedRotate:
+        return 0;
     case Operation::Min:
         return elementwise<Operation::Min, std::int32_t, A>(data);
     case Operation::Max:

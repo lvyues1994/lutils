@@ -6,6 +6,16 @@
 namespace lutils::simd {
 namespace detail {
 struct MaskAccess;
+LUTILS_SIMD_INLINE constexpr std::size_t countBits(std::uint64_t bits) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    return static_cast<std::size_t>(__builtin_popcountll(bits));
+#else
+    std::size_t result = 0;
+    for (; bits; bits &= bits - 1)
+        ++result;
+    return result;
+#endif
+}
 template <std::size_t Size>
 inline constexpr std::uint64_t validMaskBits = ~std::uint64_t{0} >> (64 - Size);
 }

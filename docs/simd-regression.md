@@ -33,14 +33,19 @@ uv run --no-project --offline --python '>=3.12' tools/simd/pair.py compare \
 | `extended` | 上述过滤与 float → i32/u32 四种饱和舍入 |
 | `primitives` | 原有通用原语与 HostFrame 图像转换 |
 | `composition` | 整数 min/max、比较与选择、浮点交织、整数分组归约、FMA；分别记录库实现与同 ISA intrinsic 参考 |
+| `fixed` | 3/7/8/9/19/64 个逻辑 lane 的加法、逆序及 split/concat 旋转，含非完整尾块 |
 | `va` | VA 资源，含映射、计算、结束访问 |
 | `dma` | `/dev/dma_heap/system` 分配的真实 DMA buffer |
 | `ahb` | Android AHB BLOB |
 | `ahb-rgba` | NV12 AHB BLOB 输入、原生 RGBA AHB 输出 |
 
 Android 使用相同 NDK 分别构建两份源码，在 capture 中追加 `--serial`，并选择设备可用 CPU。
+通过 `ADB_SERVER_SOCKET=tcp:host:port` 指定已有服务。采集和测试入口会先核对服务协议及设备状态，
+不匹配时停止，不重启共享 ADB 服务。CMake 设备测试对应 `LUTILS_ANDROID_ADB_SOCKET`。
 每次运行使用独立 UUID 临时目录，只对测试进程设置 affinity，结束后清理；不改调频或设备设置。
 `--push-timeout` 默认 60 秒，可在 1–600 秒内调整，适用于无线 ADB 和较大的二进制。
+排查传输问题时，可尝试设置 `LUTILS_ANDROID_NO_COMPRESSION=1`，或直接运行测试工具时传 `--no-compression`。
+该选项只对本次 `adb push` 添加 `-Z`，不改变 ADB 服务或设备配置；文件传输不计入基准耗时。
 单个基准执行期限为 50 秒；传输和清理另有界限。资源不支持返回 77，不算性能通过。
 
 ## 配对协议与判定
@@ -66,6 +71,8 @@ Android 使用相同 NDK 分别构建两份源码，在 capture 中追加 `--ser
 
 因此内核或 microcode 升级后，只需在升级后的机器上重新构建并测量两个版本；
 同一次 session 内的环境变化仍然不允许。`selected_target` 是结果，不是用例身份。
+资源基准固定 VA 分配的页对齐，记录源、目标和 UV 平面的页内偏移；偏移参与用例身份比较。
+调优报告保留每次选择的后端、校准耗时和 outcome，避免把选优波动隐藏在汇总中。
 `implementation` 区分库实现和 intrinsic 参考，两者分别做前后比较，不能混为同一个用例。
 
 一个块用四个进程各自的中位数计算
@@ -86,6 +93,9 @@ ABBA 降低顺序漂移影响，不能消除所有机器噪声。
 
 ## CI 接入状态
 
+普通 Linux CI 在 GCC/Clang 两套编译器下增加关闭 compiler-vector 层的 SIMD 回归。
+NDK 离线构建继续检查编译拒绝用例与安装 SDK；设备执行由独立 workflow 负责。
+
 `.github/workflows/simd-performance.yml` 提供默认分支 push 和手动入口，**默认关闭**。
 普通 push 比较事件的 before 与当前 SHA；手动可指定祖先提交，留空比较 HEAD 的父提交。
 全零、缺失、相同或非祖先基线直接失败，不静默换基线。
@@ -103,3 +113,9 @@ ABBA 降低顺序漂移影响，不能消除所有机器噪声。
 超时或中断会终止自己创建的进程组。没有匹配测试视为失败。
 报告与原始数据分别上传为 CI artifact，原始数据保留 14 天，不写入 Git；最后清理本次独立临时目录。
 本次仅实现和本地验证，没有注册 runner、修改仓库设置或启用任务。
+
+Android 真机回归由 `.github/workflows/android-simd.yml` 提供，默认关闭。需要同一受限 runner group，
+标签 `lutils-android`，受保护 environment `android-simd`，以及预装 NDK r28、adb、uv。
+设置 `LUTILS_ANDROID_SERIAL`、`LUTILS_ANDROID_ADB_SOCKET` 和 `LUTILS_ANDROID_SIMD_ENABLED=true` 后，
+在独立构建目录串行运行 SIMD、图像、资源映射及安装后的 SDK 消费方；每个远端进程限时 20 秒，
+传输限时 60 秒。测试日志上传为 artifact，结束清理本次目录。

@@ -8,6 +8,20 @@ void convertRows(std::uint8_t const *top, std::uint8_t const *bottom, std::uint8
                  std::uint8_t *y1, std::uint8_t *uv, std::size_t width) {
     using V = simd::Batch<std::uint8_t, Abi>;
     std::size_t x = 0;
+    if constexpr (std::is_same_v<Abi, simd::abi::avx2>) {
+        // Align all three output streams when their row offsets permit it.
+        auto y0Offset = reinterpret_cast<std::uintptr_t>(y0) % V::size;
+        auto y1Offset = reinterpret_cast<std::uintptr_t>(y1) % V::size;
+        auto uvOffset = reinterpret_cast<std::uintptr_t>(uv) % V::size;
+        auto prefix = (V::size - y0Offset) % V::size;
+        if (width >= 2 * V::size && y0Offset == y1Offset && y0Offset == uvOffset)
+            for (; x < prefix; ++x) {
+                y0[x] = top[2 * x + 1];
+                y1[x] = bottom[2 * x + 1];
+                uv[x] = static_cast<std::uint8_t>(
+                    (unsigned(top[2 * x]) + unsigned(bottom[2 * x]) + 1u) / 2u);
+            }
+    }
     while (width - x >= V::size) {
         auto a =
             simd::deinterleave(simd::load<V>(top + 2 * x), simd::load<V>(top + 2 * x + V::size));

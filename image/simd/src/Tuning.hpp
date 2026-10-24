@@ -39,8 +39,10 @@ inline std::optional<double> stableGain(PairSamples const &samples) {
 inline bool confirmed(PairSamples const &screen, PairSamples const &confirmation) {
     return stableGain(screen).has_value() && stableGain(confirmation).has_value();
 }
-// Append only complete ABBA/BAAB blocks. nullopt marks the deadline.
+// Append only complete ABBA/BAAB blocks. Return false only on the deadline.
+// Two non-wins make the required four wins out of five impossible.
 template <class Measure> Result<bool> collectPairs(PairSamples &out, Measure measure) {
+    unsigned nonWins = 0;
     for (std::size_t round = 0; round < 5; ++round) {
         double sums[2]{};
         for (unsigned step = 0; step < 4; ++step) {
@@ -54,6 +56,8 @@ template <class Measure> Result<bool> collectPairs(PairSamples &out, Measure mea
         }
         out.baseline.push_back(sums[0] / 2);
         out.candidate.push_back(sums[1] / 2);
+        if (sums[1] >= sums[0] && ++nonWins == 2)
+            return true;
     }
     return true;
 }

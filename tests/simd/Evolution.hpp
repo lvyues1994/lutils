@@ -1,5 +1,7 @@
 #pragma once
 // Included inside simd_test; uses the independent scalar oracle helpers.
+template <std::size_t N> constexpr std::size_t lastLane(std::size_t i) { return N - 1 - i; }
+template <std::size_t N> constexpr std::size_t inputBoundary(std::size_t i) { return N - 1 + i; }
 template <class T, class A> constexpr bool constexprMask() {
     using V = s::Batch<T, A>;
     auto empty = s::first_n<V>(0), full = s::first_n<V>(V::size);
@@ -58,6 +60,19 @@ template <class T, class A> void composedMask() {
         }
         auto zipped = s::interleave(yes, no);
         auto unzipped = s::deinterleave(zipped.low, zipped.high);
+        auto last = s::permute<1, lastLane<V::size>>(yes);
+        auto actualLast = last.lane(0), expectedLast = yes.lane(V::size - 1);
+        check(std::memcmp(&actualLast, &expectedLast, sizeof(T)) == 0);
+        if constexpr (V::size >= 2) {
+            auto pair = s::permute<2, lastLane<V::size>>(yes);
+            auto boundary = s::permute<2, inputBoundary<V::size>>(yes, no);
+            for (std::size_t i = 0; i < 2; ++i) {
+                auto x = pair.lane(i), y = yes.lane(V::size - 1 - i);
+                auto z = boundary.lane(i), w = i ? no.lane(0) : yes.lane(V::size - 1);
+                check(std::memcmp(&x, &y, sizeof(T)) == 0);
+                check(std::memcmp(&z, &w, sizeof(T)) == 0);
+            }
+        }
         for (std::size_t i = 0; i < V::size; ++i) {
             auto x = yes.lane(i), y = unzipped.even.lane(i);
             auto z = no.lane(i), w = unzipped.odd.lane(i);
@@ -70,6 +85,21 @@ template <class V> void checkedMemory() {
     std::array<T, V::size + 2> input{}, output{};
     for (std::size_t i = 0; i < input.size(); ++i)
         input[i] = static_cast<T>(i % 100);
+    V transferred;
+    s::load(input.data() + 1, transferred);
+    for (std::size_t i = 0; i < V::size; ++i)
+        check(transferred.lane(i) == input[i + 1]);
+    // Reference load/store must also preserve a self-transfer.
+    s::load(s::detail::Access::data(transferred), transferred);
+    s::store(s::detail::Access::data(transferred), transferred);
+    for (std::size_t i = 0; i < V::size; ++i)
+        check(transferred.lane(i) == input[i + 1]);
+    if constexpr (V::size > 1) {
+        s::store_partial(s::detail::Access::data(transferred) + 1, transferred, V::size - 1);
+        for (std::size_t i = 1; i < V::size; ++i)
+            check(transferred.lane(i) == input[i]);
+        s::load(s::detail::Access::data(transferred), transferred);
+    }
     for (std::size_t n = 0; n <= V::size; ++n) {
         s::MemoryView<T const> source(n ? input.data() + 1 : nullptr, n);
         output.fill(T{77});

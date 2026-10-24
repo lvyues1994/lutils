@@ -20,15 +20,21 @@ template <class T> class MemoryView {
     T *data_;
     std::size_t size_;
 };
+// Reference output avoids aggregate-return scalarization in some ARM compilers.
+// The source can alias the destination storage; transfer still has value semantics.
+template <class T, class A> LUTILS_SIMD_INLINE void load(T const *p, Batch<T, A> &out) noexcept {
+    assert(p);
+    std::memmove(detail::Access::data(out), p, sizeof(T) * out.size);
+}
 template <class V> LUTILS_SIMD_INLINE V load(typename V::value_type const *p) noexcept {
     assert(p);
     V out;
     std::memcpy(detail::Access::data(out), p, sizeof(typename V::value_type) * V::size);
     return out;
 }
-template <class T, class A> LUTILS_SIMD_INLINE void store(T *p, Batch<T, A> v) noexcept {
+template <class T, class A> LUTILS_SIMD_INLINE void store(T *p, Batch<T, A> const &v) noexcept {
     assert(p);
-    std::memcpy(p, detail::Access::data(v), sizeof(T) * v.size);
+    std::memmove(p, detail::Access::data(v), sizeof(T) * v.size);
 }
 template <class V>
 LUTILS_SIMD_INLINE V load_partial(typename V::value_type const *p, std::size_t n,
@@ -42,18 +48,19 @@ LUTILS_SIMD_INLINE V load_partial(typename V::value_type const *p, std::size_t n
     return out;
 }
 template <class T, class A>
-LUTILS_SIMD_INLINE void store_partial(T *p, Batch<T, A> v, std::size_t n) noexcept {
+LUTILS_SIMD_INLINE void store_partial(T *p, Batch<T, A> const &v, std::size_t n) noexcept {
     assert(n <= v.size);
     if (n) {
         assert(p);
-        std::memcpy(p, detail::Access::data(v), n * sizeof(T));
+        std::memmove(p, detail::Access::data(v), n * sizeof(T));
     }
 }
 template <class V> LUTILS_SIMD_INLINE V load_aligned(typename V::value_type const *p) noexcept {
     assert(reinterpret_cast<std::uintptr_t>(p) % V::alignment == 0);
     return load<V>(p);
 }
-template <class T, class A> LUTILS_SIMD_INLINE void store_aligned(T *p, Batch<T, A> v) noexcept {
+template <class T, class A>
+LUTILS_SIMD_INLINE void store_aligned(T *p, Batch<T, A> const &v) noexcept {
     assert((reinterpret_cast<std::uintptr_t>(p) % Batch<T, A>::alignment == 0));
     store(p, v);
 }
@@ -80,7 +87,7 @@ LUTILS_SIMD_INLINE PartialLoad<V> load_partial(MemoryView<T> source, std::size_t
     return {load_partial<V>(n ? source.data() + offset : nullptr, n, fill), first_n<V>(n), n};
 }
 template <class T, class A>
-LUTILS_SIMD_INLINE bool try_store(MemoryView<T> destination, Batch<T, A> value,
+LUTILS_SIMD_INLINE bool try_store(MemoryView<T> destination, Batch<T, A> const &value,
                                   std::size_t offset = 0) noexcept {
     if (offset > destination.size() || destination.size() - offset < value.size)
         return false;
@@ -88,7 +95,7 @@ LUTILS_SIMD_INLINE bool try_store(MemoryView<T> destination, Batch<T, A> value,
     return true;
 }
 template <class T, class A>
-LUTILS_SIMD_INLINE std::size_t store_partial(MemoryView<T> destination, Batch<T, A> value,
+LUTILS_SIMD_INLINE std::size_t store_partial(MemoryView<T> destination, Batch<T, A> const &value,
                                              std::size_t offset = 0) noexcept {
     auto n = offset >= destination.size() ? 0 : destination.size() - offset;
     if (n > value.size)

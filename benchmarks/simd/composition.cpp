@@ -47,8 +47,8 @@ template <class T> T value(std::uint32_t &state) {
     }
 }
 template <class T>
-void test(c::Operation op, char const *name, std::size_t n, bool smoke,
-          Clock::time_point deadline) {
+void test(c::Operation op, char const *name, std::size_t n, bool smoke, Clock::time_point deadline,
+          std::size_t lanes = 0) {
     auto count = op == c::Operation::Zip || op == c::Operation::Unzip ? 2 * n
                  : op == c::Operation::Reduce                         ? (n + 7) / 8
                                                                       : n;
@@ -59,6 +59,19 @@ void test(c::Operation op, char const *name, std::size_t n, bool smoke,
             x = value<T>(state);
     for (std::size_t i = 0; i < n; ++i) {
         switch (op) {
+        case c::Operation::FixedAdd:
+            expected[i] = a[i + 1] + b[i + 1];
+            break;
+        case c::Operation::FixedReverse:
+        case c::Operation::FixedRotate: {
+            auto start = i / lanes * lanes;
+            auto width = std::min(lanes, n - start);
+            auto lane = i - start;
+            auto index =
+                op == c::Operation::FixedReverse ? width - 1 - lane : (lane + width / 2) % width;
+            expected[i] = a[start + index + 1];
+            break;
+        }
         case c::Operation::Min:
             expected[i] = std::min(a[i + 1], b[i + 1]);
             break;
@@ -87,11 +100,12 @@ void test(c::Operation op, char const *name, std::size_t n, bool smoke,
             break;
         }
     }
-    c::Data data{a.data() + 1, b.data() + 1, yes.data() + 1, no.data() + 1, out.data() + 1, n};
+    c::Data data{a.data() + 1, b.data() + 1, yes.data() + 1, no.data() + 1, out.data() + 1, n,
+                 lanes};
     for (auto backend : backends(op))
         for (bool intrinsic : {false, true}) {
             auto function = intrinsic ? backend.intrinsic : backend.library;
-            if (!function)
+            if ((lanes && intrinsic) || !function)
                 continue;
             auto run = [&] { return function(op, data); };
             auto verify = [&](std::uint64_t written) {
@@ -115,8 +129,9 @@ void test(c::Operation op, char const *name, std::size_t n, bool smoke,
 int main(int argc, char **argv) {
     try {
         bool smoke = argc == 2 && std::string(argv[1]) == "--smoke";
-        if (argc > 1 && !smoke)
-            throw std::runtime_error("usage: simd_composition_benchmark [--smoke]");
+        bool fixed = argc == 2 && std::string(argv[1]) == "--fixed";
+        if (argc > 1 && !smoke && !fixed)
+            throw std::runtime_error("usage: simd_composition_benchmark [--smoke|--fixed]");
         std::cout << std::setprecision(12)
                   << "{\"type\":\"environment\",\"schema\":1,\"compiler\":\"" << __VERSION__
                   << "\",\"build\":\"" << LUTILS_BENCH_BUILD
@@ -125,16 +140,29 @@ int main(int argc, char **argv) {
         auto deadline = Clock::now() + std::chrono::seconds(45);
         auto sizes = smoke ? std::vector<std::size_t>{0, 1, 3, 4, 7, 8, 9, 15, 16, 17, 67}
                            : std::vector<std::size_t>{4096, 4099, 262144};
-        for (auto n : sizes) {
-            test<std::int32_t>(c::Operation::Min, "min_i32", n, smoke, deadline);
-            test<std::uint32_t>(c::Operation::Max, "max_u32", n, smoke, deadline);
-            test<std::int32_t>(c::Operation::SelectInt, "select_i32", n, smoke, deadline);
-            test<float>(c::Operation::SelectFloat, "select_f32", n, smoke, deadline);
-            test<float>(c::Operation::Zip, "interleave_f32", n, smoke, deadline);
-            test<float>(c::Operation::Unzip, "deinterleave_f32", n, smoke, deadline);
-            test<std::uint32_t>(c::Operation::Reduce, "reduce_u32_block8", n, smoke, deadline);
-            test<float>(c::Operation::Fma, "fma_f32", n, smoke, deadline);
-        }
+        if (fixed || smoke)
+            for (auto n : sizes)
+                for (auto width : {3u, 7u, 8u, 9u, 19u, 64u})
+                    for (auto op : {c::Operation::FixedAdd, c::Operation::FixedReverse,
+                                    c::Operation::FixedRotate}) {
+                        auto name =
+                            std::string(op == c::Operation::FixedAdd       ? "fixed_add_u32x"
+                                        : op == c::Operation::FixedReverse ? "fixed_reverse_u32x"
+                                                                           : "fixed_rotate_u32x") +
+                            std::to_string(width);
+                        test<std::uint32_t>(op, name.c_str(), n, smoke, deadline, width);
+                    }
+        if (!fixed)
+            for (auto n : sizes) {
+                test<std::int32_t>(c::Operation::Min, "min_i32", n, smoke, deadline);
+                test<std::uint32_t>(c::Operation::Max, "max_u32", n, smoke, deadline);
+                test<std::int32_t>(c::Operation::SelectInt, "select_i32", n, smoke, deadline);
+                test<float>(c::Operation::SelectFloat, "select_f32", n, smoke, deadline);
+                test<float>(c::Operation::Zip, "interleave_f32", n, smoke, deadline);
+                test<float>(c::Operation::Unzip, "deinterleave_f32", n, smoke, deadline);
+                test<std::uint32_t>(c::Operation::Reduce, "reduce_u32_block8", n, smoke, deadline);
+                test<float>(c::Operation::Fma, "fma_f32", n, smoke, deadline);
+            }
         std::cout << "{\"type\":\"complete\"}\n";
     } catch (std::exception const &error) {
         std::cerr << error.what() << '\n';

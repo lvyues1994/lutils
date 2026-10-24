@@ -45,8 +45,26 @@ void choose() {
         im::simd_detail::collectPairs(drift, [&](bool) -> lutils::Result<std::optional<double>> {
             return std::optional<double>{100.0 + double(++calls)};
         });
-    check(complete && complete.value() && calls == 20);
+    check(complete && complete.value() && calls == 8);
     check(drift.baseline == drift.candidate && !stableGain(drift));
+    // One non-win still permits four later wins, so retain all five blocks.
+    PairSamples lateWinner;
+    calls = 0;
+    auto collected = im::simd_detail::collectPairs(
+        lateWinner, [&](bool candidate) -> lutils::Result<std::optional<double>> {
+            auto round = calls++ / 4;
+            return std::optional<double>{candidate && round > 0 ? 80.0 : 100.0};
+        });
+    check(collected && collected.value() && calls == 20 && stableGain(lateWinner));
+    // Two initial ties cannot reach four wins even if every later block wins.
+    PairSamples rejected;
+    calls = 0;
+    collected = im::simd_detail::collectPairs(
+        rejected, [&](bool candidate) -> lutils::Result<std::optional<double>> {
+            auto round = calls++ / 4;
+            return std::optional<double>{candidate && round > 1 ? 80.0 : 100.0};
+        });
+    check(collected && collected.value() && calls == 8 && !stableGain(rejected));
     PairSamples partial;
     calls = 0;
     auto timeout =

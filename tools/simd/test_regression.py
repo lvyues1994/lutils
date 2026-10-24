@@ -1,5 +1,6 @@
 """Offline tests: no benchmarks, devices, global state, or network access."""
 import json
+import os
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -14,6 +15,11 @@ import regression as r
 
 class RegressionTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("ADB_SERVER_SOCKET", None)
+        os.environ.pop("LUTILS_ANDROID_NO_COMPRESSION", None)
         self.scratch = tempfile.TemporaryDirectory(prefix="lutils-regression-")
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
@@ -79,6 +85,21 @@ class RegressionTests(unittest.TestCase):
     def test_regression(self):
         result = r.compare(self.capture("a"), self.capture("b", 1.1))
         self.assertEqual(result["status"], "regression")
+
+    def test_layouts_in_one_run(self):
+        path = self.capture("layouts") / "run-0.jsonl"
+        original = [json.loads(line) for line in path.read_text().splitlines()]
+        for field in ("source_stride", "destination_stride", "source_page_offset",
+                      "destination_page_offset", "chroma_page_offset"):
+            with self.subTest(field=field):
+                rows = [original[0], {**original[1], field: 0},
+                        {**original[1], field: 16}, original[-1]]
+                path.write_text("\n".join(json.dumps(x) for x in rows))
+                self.assertEqual(len(r.load_run(path, 2)[1]), 2)
+                rows[2][field] = 0
+                path.write_text("\n".join(json.dumps(x) for x in rows))
+                with self.assertRaises(ValueError):
+                    r.load_run(path, 2)
 
     def test_noise_is_not_pass(self):
         result = r.compare(self.capture("a"), self.capture("b", offsets=[-3000, -2000, 0, 2000, 3000]))
@@ -253,6 +274,107 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(runner.main(), expected)
             self.assertEqual(len(invocations), 5)
             self.assertIn("taskset 80 ./test", invocations[3][-1])
+
+    def test_android_deadline_routing_and_interruption(self):
+        spec = importlib.util.spec_from_file_location("android_runner", r.ROOT / "tools/android/run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        binary = self.root / "bounded-executable"
+        binary.touch()
+        calls = []
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[-1].startswith("cd "):
+                self.assertIn("timeout -k 5 30 ./test", args[-1])
+                self.assertEqual(kwargs["timeout"], 40)
+                raise KeyboardInterrupt
+            return subprocess.CompletedProcess(args, 0)
+        argv = ["run.py", "--serial", "fixture", "--server-socket", "tcp:localhost:5049", "--", str(binary)]
+        with patch.object(sys, "argv", argv), patch.object(runner.subprocess, "run", side_effect=run), \
+                patch.object(runner, "verify_server") as preflight:
+            with self.assertRaises(KeyboardInterrupt):
+                runner.main()
+        preflight.assert_called_once_with("adb", "tcp:localhost:5049", "fixture")
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(calls[-1][0][-1].startswith("rm -rf /data/local/tmp/lutils-"))
+        self.assertTrue(all(kwargs["env"]["ADB_SERVER_SOCKET"] == "tcp:localhost:5049"
+                            for _, kwargs in calls))
+
+    def test_android_server_preflight_and_setup_cleanup(self):
+        import io
+        from unittest.mock import MagicMock
+        spec = importlib.util.spec_from_file_location("android_runner", r.ROOT / "tools/android/run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        def response(body):
+            stream = io.BytesIO(b"OKAY" + f"{len(body):04x}".encode() + body)
+            connection = MagicMock()
+            connection.__enter__.return_value = connection
+            connection.recv.side_effect = lambda n: stream.read(min(n, 2))
+            return connection
+        version = subprocess.CompletedProcess([], 0, "Android Debug Bridge version 1.0.41")
+        with patch.object(runner.socket, "create_connection", side_effect=[response(b"0029"), response(b"fixture device model:test\n")]), \
+                patch.object(runner.subprocess, "run", return_value=version) as commands:
+            runner.verify_server("adb", "tcp:localhost:5049", "fixture")
+            self.assertEqual(commands.call_count, 1)
+            self.assertEqual(commands.call_args.args[0], ["adb", "version"])
+        with patch.object(runner.socket, "create_connection", return_value=response(b"0028")), \
+                patch.object(runner.subprocess, "run", return_value=version):
+            with self.assertRaisesRegex(ValueError, "version mismatch"):
+                runner.verify_server("adb", "tcp:localhost:5049", "fixture")
+        binary = self.root / "setup-executable"
+        binary.touch()
+        argv = ["run.py", "--serial", "fixture", "--", str(binary)]
+        for failed_call in (1, 2, 4):
+            calls = []
+            def run(args, **kwargs):
+                calls.append(args)
+                if len(calls) == failed_call:
+                    raise subprocess.TimeoutExpired(args, 1)
+                return subprocess.CompletedProcess(args, 0)
+            with patch.object(sys, "argv", argv), patch.object(runner.subprocess, "run", side_effect=run):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    runner.main()
+            self.assertTrue(calls[-1][-1].startswith("rm -rf /data/local/tmp/lutils-"))
+
+    def test_android_inherited_server_preflight(self):
+        spec = importlib.util.spec_from_file_location("android_runner", r.ROOT / "tools/android/run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        binary = self.root / "inherited-executable"
+        binary.touch()
+        argv = ["run.py", "--serial", "fixture", "--", str(binary)]
+        with patch.dict(os.environ, ADB_SERVER_SOCKET="tcp:localhost:5049"), \
+                patch.object(sys, "argv", argv), patch.object(runner, "verify_server") as preflight, \
+                patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(runner.main(), 0)
+        preflight.assert_called_once_with("adb", "tcp:localhost:5049", "fixture")
+        with patch.dict(os.environ, ADB_SERVER_SOCKET="tcp:localhost:5049"), \
+                patch.object(r.importlib.util, "module_from_spec", return_value=runner), \
+                patch.object(r.importlib.machinery.SourceFileLoader, "exec_module"), \
+                patch.object(runner, "verify_server", side_effect=ValueError("preflight stopped")), \
+                patch.object(r, "command") as command:
+            with self.assertRaisesRegex(ValueError, "preflight stopped"):
+                r.machine_info(7, "fixture")
+        command.assert_not_called()
+
+    def test_android_optional_push_compression(self):
+        spec = importlib.util.spec_from_file_location("android_runner", r.ROOT / "tools/android/run.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        binary = self.root / "push-executable"
+        binary.touch()
+        for options, environment, disabled in (([], {}, False), (["--no-compression"], {}, True),
+                ([], {"LUTILS_ANDROID_NO_COMPRESSION": "1"}, True)):
+            with self.subTest(options=options, environment=environment):
+                argv = ["run.py", "--serial", "fixture", *options, "--", str(binary)]
+                with patch.dict(os.environ, environment), patch.object(sys, "argv", argv), \
+                        patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                    self.assertEqual(runner.main(), 0)
+                pushes = [call.args[0] for call in run.call_args_list if "push" in call.args[0]]
+                self.assertEqual(len(pushes), 1)
+                self.assertEqual("-Z" in pushes[0], disabled)
+                self.assertIn(str(binary), pushes[0])
 
 
 if __name__ == "__main__":

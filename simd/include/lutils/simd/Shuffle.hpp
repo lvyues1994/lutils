@@ -11,24 +11,35 @@ template <class V> struct Deinterleaved {
     V odd;
 };
 template <class T, class A>
-LUTILS_SIMD_INLINE Interleaved<Batch<T, A>> interleave(Batch<T, A> a, Batch<T, A> b) noexcept {
+LUTILS_SIMD_INLINE Interleaved<Batch<T, A>> interleave(Batch<T, A> const &a,
+                                                       Batch<T, A> const &b) noexcept {
     Interleaved<Batch<T, A>> out;
     detail::Ops<T, A>::zip(detail::Access::data(out.low), detail::Access::data(out.high),
                            detail::Access::data(a), detail::Access::data(b));
     return out;
 }
 template <class T, class A>
-LUTILS_SIMD_INLINE Deinterleaved<Batch<T, A>> deinterleave(Batch<T, A> a, Batch<T, A> b) noexcept {
+LUTILS_SIMD_INLINE Deinterleaved<Batch<T, A>> deinterleave(Batch<T, A> const &a,
+                                                           Batch<T, A> const &b) noexcept {
     Deinterleaved<Batch<T, A>> out;
     detail::Ops<T, A>::unzip(detail::Access::data(out.even), detail::Access::data(out.odd),
                              detail::Access::data(a), detail::Access::data(b));
     return out;
 }
 template <std::size_t... I, class T, class A>
-LUTILS_SIMD_INLINE Batch<T, A> shuffle(Batch<T, A> a) noexcept {
+LUTILS_SIMD_INLINE Batch<T, A> shuffle(Batch<T, A> const &a) noexcept {
     static_assert(sizeof...(I) == Batch<T, A>::size, "shuffle must specify every output lane");
     static_assert(((I < Batch<T, A>::size) && ...), "shuffle index out of range");
     Batch<T, A> out;
+#if defined(LUTILS_SIMD_COMPILER_VECTOR)
+    using Native = typename detail::Shape<T, A>::native_abi;
+    if constexpr (detail::compilerVector<Native> && Batch<T, A>::size == detail::lanes<T, Native>) {
+        using Reg = detail::Vector<T, Native>;
+        auto x = Reg::read(detail::Access::data(a));
+        Reg::write(detail::Access::data(out), __builtin_shufflevector(x, x, I...));
+        return out;
+    }
+#endif
     std::size_t index = 0;
     (out.set_lane(index++, a.lane(I)), ...);
     return out;
@@ -36,8 +47,8 @@ LUTILS_SIMD_INLINE Batch<T, A> shuffle(Batch<T, A> a) noexcept {
 template <std::size_t N, class T, class A>
 LUTILS_SIMD_INLINE Batch<T, A> rotate_left(Batch<T, A> a) noexcept {
     Batch<T, A> out;
-    for (std::size_t i = 0; i < a.size; ++i)
-        out.set_lane(i, a.lane((i + N % a.size) % a.size));
+    for (std::size_t i = 0; i < Batch<T, A>::size; ++i)
+        out.set_lane(i, a.lane((i + N % Batch<T, A>::size) % Batch<T, A>::size));
     return out;
 }
 namespace detail {
@@ -50,20 +61,43 @@ template <auto Index, std::size_t I> struct PermuteIndex {
 };
 template <std::size_t M, auto Index, class T, class A, std::size_t... I>
 LUTILS_SIMD_INLINE auto permuteImpl(Batch<T, A> a, std::index_sequence<I...>) noexcept {
-    static_assert(((PermuteIndex<Index, I>::value < a.size) && ...), "permute index out of range");
+    static_assert(((PermuteIndex<Index, I>::value < Batch<T, A>::size) && ...),
+                  "permute index out of range");
     Resized<T, M, A> out;
+#if defined(LUTILS_SIMD_COMPILER_VECTOR)
+    using Native = typename Shape<T, A>::native_abi;
+    if constexpr (compilerVector<Native> && Batch<T, A>::size == lanes<T, Native> &&
+                  M <= lanes<T, Native> && (M & (M - 1)) == 0) {
+        using Reg = Vector<T, Native>;
+        auto x = Reg::read(Access::data(a));
+        auto shuffled = __builtin_shufflevector(x, x, PermuteIndex<Index, I>::value...);
+        std::memcpy(Access::data(out), &shuffled, sizeof(T) * M);
+        return out;
+    }
+#endif
     (out.set_lane(I, a.lane(PermuteIndex<Index, I>::value)), ...);
     return out;
 }
 template <std::size_t M, auto Index, class T, class A, std::size_t... I>
 LUTILS_SIMD_INLINE auto permuteImpl(Batch<T, A> a, Batch<T, A> b,
                                     std::index_sequence<I...>) noexcept {
-    static_assert(((PermuteIndex<Index, I>::value < 2 * a.size) && ...),
+    static_assert(((PermuteIndex<Index, I>::value < 2 * Batch<T, A>::size) && ...),
                   "permute index out of range");
     Resized<T, M, A> out;
-    (out.set_lane(I, PermuteIndex<Index, I>::value < a.size
+#if defined(LUTILS_SIMD_COMPILER_VECTOR)
+    using Native = typename Shape<T, A>::native_abi;
+    if constexpr (compilerVector<Native> && Batch<T, A>::size == lanes<T, Native> &&
+                  M <= lanes<T, Native> && (M & (M - 1)) == 0) {
+        using Reg = Vector<T, Native>;
+        auto x = Reg::read(Access::data(a)), y = Reg::read(Access::data(b));
+        auto shuffled = __builtin_shufflevector(x, y, PermuteIndex<Index, I>::value...);
+        std::memcpy(Access::data(out), &shuffled, sizeof(T) * M);
+        return out;
+    }
+#endif
+    (out.set_lane(I, PermuteIndex<Index, I>::value < Batch<T, A>::size
                          ? a.lane(PermuteIndex<Index, I>::value)
-                         : b.lane(PermuteIndex<Index, I>::value - a.size)),
+                         : b.lane(PermuteIndex<Index, I>::value - Batch<T, A>::size)),
      ...);
     return out;
 }

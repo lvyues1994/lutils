@@ -27,15 +27,21 @@ im::FrameDesc description(std::uint32_t width, std::uint32_t height) {
              im::ChromaLocation::Cosited, im::Primaries::Bt709, im::Transfer::Bt709}};
 }
 void conversion(std::uint32_t width, std::uint32_t height, bool reversed, bool sourceReversed,
-                s::Target target) {
+                s::Target target, std::size_t layoutOffset = 64) {
     auto desc = description(width, height), outDesc = desc;
     outDesc.format = im::nv12();
     outDesc.color.vertical = im::ChromaLocation::Midpoint;
     // Deliberately misalign row starts and preserve padding canaries.
-    std::size_t const inStride = 2 * std::size_t{width} + 7, outStride = std::size_t{width} + 5;
+    std::size_t const inStride = 2 * std::size_t{width} + 7;
+    std::size_t const outStride =
+        layoutOffset < 32 ? (std::size_t{width} + 63) / 64 * 64 : std::size_t{width} + 5;
     std::size_t const uvRows = (std::size_t{height} + 1) / 2;
     std::vector<std::byte> input(inStride * height + 2, std::byte{0xa5});
-    std::vector<std::byte> output(outStride * (height + uvRows) + 2, std::byte{0x5a});
+    std::vector<std::byte> output(outStride * (height + uvRows) + 64, std::byte{0x5a});
+    auto outOffset =
+        layoutOffset < 32
+            ? (32 + layoutOffset - reinterpret_cast<std::uintptr_t>(output.data()) % 32) % 32
+            : 1;
     auto plane = [&](std::size_t offset, std::size_t rows) {
         return im::PlaneView{output.data(), output.size(),
                              offset + (reversed ? (rows - 1) * outStride : 0),
@@ -47,7 +53,8 @@ void conversion(std::uint32_t width, std::uint32_t height, bool reversed, bool s
         {{input.data(), input.size(), 1 + (sourceReversed ? (height - 1) * inStride : 0),
           sourceReversed ? -static_cast<std::ptrdiff_t>(inStride)
                          : static_cast<std::ptrdiff_t>(inStride)}}};
-    im::FrameView destination{outDesc, {plane(1, height), plane(1 + outStride * height, uvRows)}};
+    im::FrameView destination{
+        outDesc, {plane(outOffset, height), plane(outOffset + outStride * height, uvRows)}};
     for (std::size_t y = 0; y < height; ++y)
         for (std::size_t x = 0; x < 2 * width; ++x)
             im::row(source.planes[0], y)[x] = static_cast<std::byte>((x * 23 + y * 131) % 256);
@@ -116,6 +123,12 @@ int main() {
                     for (auto reversed : {false, true})
                         rgbaConversion(width, height, reversed, target);
             rgbaConversion(1921, 17, false, target);
+            for (std::size_t offset = 0; offset < 32; ++offset)
+                for (auto width : {2u, 62u, 64u, 66u, 128u, 1920u})
+                    for (auto height : {1u, 2u, 5u})
+                        for (auto reversed : {false, true})
+                            for (auto sourceReversed : {false, true})
+                                conversion(width, height, reversed, sourceReversed, target, offset);
             for (std::uint32_t width = 2; width <= 130; width += 2)
                 for (auto height : {1u, 2u, 3u, 5u})
                     for (auto reversed : {false, true})

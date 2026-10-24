@@ -1,0 +1,200 @@
+{
+  "baseline": "29857c1677dd2b9b6c68fde2928d93ce14553563",
+  "after": "working-tree (implementation patch archived)",
+  "protocol": "abba-v1",
+  "blocks": 5,
+  "processes_per_version": 10,
+  "regression_threshold": 0.05,
+  "noise_threshold": 0.03,
+  "suites": {
+    "linux-filters": {
+      "status": "regression",
+      "pass": 132,
+      "regression": 22,
+      "inconclusive": 62,
+      "binary_sha256": {
+        "before": "7ae6f154ebf5e8ce67391f452454d57284e53a683446630ac24a0810833a9ba5",
+        "after": "94f4975575627bee4fb46d16d7e1d299e9fb48b2f6a87f4ecb3beda5960af429"
+      }
+    },
+    "linux-composition": {
+      "status": "inconclusive",
+      "pass": 74,
+      "regression": 0,
+      "inconclusive": 46,
+      "binary_sha256": {
+        "before": "e80186d7d11feda1938004e9ab48ad090774a931300f8f0b874860781b21baeb",
+        "after": "c4fba41c2facec88e2c175dc15a737128ace2b85b45ada5d882a8d3fe774e17a"
+      }
+    },
+    "linux-fixed": {
+      "status": "inconclusive",
+      "pass": 106,
+      "regression": 0,
+      "inconclusive": 56,
+      "binary_sha256": {
+        "before": "e80186d7d11feda1938004e9ab48ad090774a931300f8f0b874860781b21baeb",
+        "after": "c4fba41c2facec88e2c175dc15a737128ace2b85b45ada5d882a8d3fe774e17a"
+      }
+    },
+    "linux-primitives": {
+      "status": "regression",
+      "pass": 186,
+      "regression": 3,
+      "inconclusive": 36,
+      "binary_sha256": {
+        "before": "1ff325a0556d5408210a161d0d9fe8c16376ae968ff93f6e15832f76e359f9be",
+        "after": "7a7f7bd6521c1dfe3d5647f0c516bcd3a6c4222e663ab757e16b8d1cc570d346"
+      }
+    },
+    "linux-va": {
+      "status": "inconclusive",
+      "pass": 61,
+      "regression": 0,
+      "inconclusive": 11,
+      "binary_sha256": {
+        "before": "3c19ab821021bbd2548baeb052690897da6c74ded93f76565e9528bda0e4f2e5",
+        "after": "38ac514d5b3bd887f506e827f958a197698c04148bcc798414eb030e9a8e871a"
+      }
+    },
+    "linux-layout": {
+      "status": "inconclusive",
+      "pass": 9,
+      "regression": 0,
+      "inconclusive": 9,
+      "binary_sha256": {
+        "before": "25b62c18bc81aa09067be64b0a4ee98531eeb4719d448432ded2273a954294ca",
+        "after": "e429bb9b6167029c1e8cc348323e58c250e0d359da1b3ff53170d73e9bf71800"
+      }
+    },
+    "android-filters": {
+      "status": "inconclusive",
+      "pass": 134,
+      "regression": 0,
+      "inconclusive": 10,
+      "binary_sha256": {
+        "before": "d104430b42d87a118e8b2ca7592ba8023d156d19c32b2039938f877ca6c71618",
+        "after": "a84da42f5e8c173bd784689682ea180d88627cb03561fbdde54ca1d54948070a"
+      }
+    },
+    "android-composition": {
+      "status": "inconclusive",
+      "pass": 69,
+      "regression": 0,
+      "inconclusive": 3,
+      "binary_sha256": {
+        "before": "5cc69878e67f1be22e49b1c8858291f810af39b0bed9dd1fbe6158613f4c5d14",
+        "after": "6c59faa11cdea5589d726947475cdf5e3c01ca744a6cb2a5d11bd9a2792deea7"
+      }
+    },
+    "android-fixed": {
+      "status": "inconclusive",
+      "pass": 53,
+      "regression": 0,
+      "inconclusive": 55,
+      "binary_sha256": {
+        "before": "5cc69878e67f1be22e49b1c8858291f810af39b0bed9dd1fbe6158613f4c5d14",
+        "after": "6c59faa11cdea5589d726947475cdf5e3c01ca744a6cb2a5d11bd9a2792deea7"
+      }
+    },
+    "android-primitives": {
+      "status": "inconclusive",
+      "pass": 99,
+      "regression": 0,
+      "inconclusive": 69,
+      "binary_sha256": {
+        "before": "ba5e632ad16c9c3d8e611d19ec22b3026a5a92e05f7931f1d7e1f4c548563f4e",
+        "after": "8f12ea94c7aa26b6110387ce6842668f40046fc176adf254cd1f478b12b48e2e"
+      }
+    },
+    "android-va": {
+      "status": "inconclusive",
+      "pass": 67,
+      "regression": 0,
+      "inconclusive": 5,
+      "binary_sha256": {
+        "before": "6a21ae6bbee2f591d0cf9097a58edae3f414fb657b66b3a7c41686f6899c76e3",
+        "after": "37729923b4d6476fe87e7b193325e2bf2a4334bb02d3e2c2ad5befb1024dd670"
+      }
+    },
+    "android-dma": {
+      "status": "inconclusive",
+      "pass": 45,
+      "regression": 0,
+      "inconclusive": 27,
+      "binary_sha256": {
+        "before": "6a21ae6bbee2f591d0cf9097a58edae3f414fb657b66b3a7c41686f6899c76e3",
+        "after": "37729923b4d6476fe87e7b193325e2bf2a4334bb02d3e2c2ad5befb1024dd670"
+      }
+    },
+    "android-ahb": {
+      "status": "inconclusive",
+      "pass": 71,
+      "regression": 0,
+      "inconclusive": 1,
+      "binary_sha256": {
+        "before": "6a21ae6bbee2f591d0cf9097a58edae3f414fb657b66b3a7c41686f6899c76e3",
+        "after": "37729923b4d6476fe87e7b193325e2bf2a4334bb02d3e2c2ad5befb1024dd670"
+      }
+    },
+    "android-ahb-rgba": {
+      "status": "pass",
+      "pass": 36,
+      "regression": 0,
+      "inconclusive": 0,
+      "binary_sha256": {
+        "before": "6a21ae6bbee2f591d0cf9097a58edae3f414fb657b66b3a7c41686f6899c76e3",
+        "after": "37729923b4d6476fe87e7b193325e2bf2a4334bb02d3e2c2ad5befb1024dd670"
+      }
+    }
+  },
+  "total": {
+    "pass": 1142,
+    "regression": 25,
+    "inconclusive": 390
+  },
+  "archive": {
+    "path": ".local-artifacts/simd/finish.tar.gz",
+    "sha256": "03f6adc9bd97e3903bfdc7e77df1afdcce5562df29e31183d957e7345349cb44",
+    "bytes": 32624639,
+    "files": 1526,
+    "implementation_patch_sha256": "82b1da69e0d8624aad037ed8586e243aa29b5c0a8eb69eb1dcb86891029096f6"
+  },
+  "tests": {
+    "linux": {
+      "passed": 65,
+      "skipped": 1,
+      "log": "complete-linux-tests.log",
+      "skip": "no DMA heap"
+    },
+    "fallback": {
+      "passed": 26,
+      "log": "complete-fallback-tests.log"
+    },
+    "asan_ubsan_lsan": {
+      "passed": 26,
+      "log": "complete-sanitize-tests.log"
+    },
+    "android": {
+      "passed": 25,
+      "logs": [
+        "complete-android-tests.log",
+        "complete-android-uncompressed-tests.log"
+      ],
+      "note": "18 passed initially; 7 transfer failures passed with no-compression retry; no test assertion failures",
+      "ndk": "28.2.13676358",
+      "standard": "c++17",
+      "extensions": false
+    },
+    "tools": {
+      "passed": 36,
+      "log": "final-tool-tests.log"
+    },
+    "ci_remote": "not enabled; dedicated runner settings pending"
+  },
+  "reuse_evidence": {
+    "linux_resources": "final binary SHA-256 unchanged",
+    "android_resources": "all allocated sections except build-id and all PT_LOAD bytes excluding build-id identical; assembly-probes/elf-resource-equivalence/evidence.json",
+    "linux_layout": "same final image static libraries; hashes in session/linux-layout/manifest.json"
+  }
+}

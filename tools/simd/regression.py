@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -17,6 +18,7 @@ sys.dont_write_bytecode = True
 from report import KEYS, read_run
 
 SUITES = {
+    "fixed": ("simd_composition_benchmark", ["--fixed"]),
     "composition": ("simd_composition_benchmark", []),
     "primitives": ("simd_benchmark", []),
     "extended": ("simd_extended_benchmark", []),
@@ -24,7 +26,7 @@ SUITES = {
     **{name: ("simd_resource_benchmark", ["--memory", name])
        for name in ("va", "dma", "ahb", "ahb-rgba")},
 }
-IDENTITY = (*KEYS, "source_stride", "destination_stride")
+IDENTITY = KEYS
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -112,6 +114,12 @@ def build_info(build):
 
 def machine_info(cpu, serial):
     if serial:
+        address = os.environ.get("ADB_SERVER_SOCKET")
+        if address:
+            spec = importlib.util.spec_from_file_location("android_runner", ROOT / "tools/android/run.py")
+            runner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(runner)
+            runner.verify_server("adb", address, serial)
         def read(path):
             return command(["adb", "-s", serial, "shell", "cat", path])
         def prop(name):
@@ -256,7 +264,8 @@ def summary(cases):
             "within_mad_ratio": max(case["mad_ns"] / case["median_ns"] for case in cases),
             "run_medians_ns": values,
             "selected_targets": [case.get("selected_target") for case in cases],
-            "calibration_ns": [case.get("calibration_ns") for case in cases]}
+            "calibration_ns": [case.get("calibration_ns") for case in cases],
+            "calibration_outcomes": [case.get("calibration_outcome") for case in cases]}
 
 
 def compare(before, after, threshold=0.05, noise=0.03):

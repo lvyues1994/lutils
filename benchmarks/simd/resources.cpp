@@ -70,8 +70,9 @@ MappedResource map(im::ImageResource const &image, co::Access access) {
 }
 co::MemoryHandle allocate(std::size_t bytes, std::string const &kind, int heap) {
     if (kind == "va") {
-        auto storage = std::make_shared<std::vector<std::byte>>(bytes);
-        return take(co::borrowMemory(storage->data(), storage->size(), storage));
+        auto storage = std::make_shared<std::vector<std::byte>>(bytes + 4095);
+        auto offset = (4096 - reinterpret_cast<std::uintptr_t>(storage->data()) % 4096) % 4096;
+        return take(co::borrowMemory(storage->data() + offset, bytes, storage));
     }
 #ifdef __ANDROID__
     if (kind == "ahb" || kind == "ahb-rgba")
@@ -175,9 +176,20 @@ void run(std::string const &kind, int heap, bool smoke, Clock::time_point deadli
                 for (auto target : targets) {
                     auto plan = take(im::CpuConversionPlan::prepare(desc, dst));
                     std::int64_t calibration = 0;
+                    int outcome = -1;
+                    std::uintptr_t sourceOffset = 0, destinationOffset = 0, chromaOffset = 0;
                     std::ptrdiff_t sourceStride = 0, destinationStride = 0;
                     {
                         auto a = map(input, co::Access::Read), b = map(output, co::Access::Write);
+                        sourceOffset =
+                            reinterpret_cast<std::uintptr_t>(im::row(a.read.planes[0], 0)) % 4096;
+                        destinationOffset =
+                            reinterpret_cast<std::uintptr_t>(im::row(b.write.planes[0], 0)) % 4096;
+                        chromaOffset =
+                            b.write.planes.size() > 1
+                                ? reinterpret_cast<std::uintptr_t>(im::row(b.write.planes[1], 0)) %
+                                      4096
+                                : destinationOffset;
                         sourceStride = a.read.planes[0].stride;
                         destinationStride = b.write.planes[0].stride;
 #ifdef LUTILS_BENCH_TUNING
@@ -185,6 +197,7 @@ void run(std::string const &kind, int heap, bool smoke, Clock::time_point deadli
                             auto t = take(im::tuneCpuConversion(a.read, b.write));
                             plan = std::move(t.plan);
                             calibration = t.elapsed.count();
+                            outcome = static_cast<int>(t.outcome);
                         }
 #endif
                         b.finish();
@@ -202,7 +215,11 @@ void run(std::string const &kind, int heap, bool smoke, Clock::time_point deadli
                         ",\"destination_stride\":" + std::to_string(destinationStride) +
                         ",\"elements\":" +
                         std::to_string(std::uint64_t(shape.width) * shape.height) +
-                        ",\"calibration_ns\":" + std::to_string(calibration);
+                        ",\"calibration_ns\":" + std::to_string(calibration) +
+                        ",\"calibration_outcome\":" + std::to_string(outcome) +
+                        ",\"source_page_offset\":" + std::to_string(sourceOffset) +
+                        ",\"destination_page_offset\":" + std::to_string(destinationOffset) +
+                        ",\"chroma_page_offset\":" + std::to_string(chromaOffset);
                     auto poison = [&](im::FrameView const &view) {
                         auto ref = expected.view();
                         for (std::size_t p = 0; p < og.size(); ++p)

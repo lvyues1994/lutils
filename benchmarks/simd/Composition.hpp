@@ -3,7 +3,19 @@
 #include <cstdint>
 
 namespace composition {
-enum class Operation { Min, Max, SelectInt, SelectFloat, Zip, Unzip, Reduce, Fma };
+enum class Operation {
+    Min,
+    Max,
+    SelectInt,
+    SelectFloat,
+    Zip,
+    Unzip,
+    Reduce,
+    Fma,
+    FixedAdd,
+    FixedReverse,
+    FixedRotate
+};
 struct Data {
     void const *a;
     void const *b;
@@ -11,6 +23,7 @@ struct Data {
     void const *d;
     void *output;
     std::size_t size;
+    std::size_t lanes = 0;
 };
 using Function = std::uint64_t(Operation, Data const &);
 Function scalar, sse2, avx2, avx2Fma, neon;

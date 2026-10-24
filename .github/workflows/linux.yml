@@ -15,6 +15,14 @@ jobs:
       - run: cmake --preset release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DLUTILS_BUILD_BENCHMARKS=ON
       - run: cmake --build --preset release -j2
       - run: ctest --preset release
+      - name: SIMD compiler-vector fallback
+        run: |
+          cmake --preset release -B build/simd-fallback \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_CXX_FLAGS=-DLUTILS_SIMD_DISABLE_COMPILER_VECTOR \
+            -DLUTILS_BUILD_EXAMPLES=OFF -DLUTILS_INSTALL=OFF
+          cmake --build build/simd-fallback -j2
+          ctest --test-dir build/simd-fallback -R '^simd\.' --output-on-failure --no-tests=error
   compute:
     runs-on: ubuntu-24.04
     strategy:

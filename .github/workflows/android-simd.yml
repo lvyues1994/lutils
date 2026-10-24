@@ -1,0 +1,65 @@
+name: Android SIMD device
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'simd/**'
+      - 'image/**'
+      - 'tests/simd/**'
+      - 'tests/downstream/**'
+      - 'benchmarks/simd/**'
+      - 'tools/android/**'
+      - 'cmake/**'
+      - 'tools/simd/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'tests/CMakeLists.txt'
+      - '.github/workflows/android-simd.yml'
+permissions:
+  contents: read
+concurrency:
+  group: lutils-android-simd-device
+  cancel-in-progress: false
+jobs:
+  device:
+    # A dedicated device and restricted runner group are prerequisites.
+    if: >-
+      vars.LUTILS_ANDROID_SIMD_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: android-simd
+    runs-on:
+      group: lutils-performance
+      labels: [self-hosted, linux, x64, lutils-android]
+    timeout-minutes: 30
+    env:
+      ANDROID_SERIAL: ${{ vars.LUTILS_ANDROID_SERIAL }}
+      ADB_SERVER_SOCKET: ${{ vars.LUTILS_ANDROID_ADB_SOCKET }}
+      UV_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Configure private build and explicit device
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_SERIAL" && test -n "$ADB_SERVER_SOCKET" && test -d "$ANDROID_NDK_HOME"
+          cmake --preset android-arm64 -B "$RUNNER_TEMP/lutils-android-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -DLUTILS_BUILD_BENCHMARKS=ON -DLUTILS_ANDROID_DEVICE_TESTS=ON \
+            -DLUTILS_ANDROID_SERIAL="$ANDROID_SERIAL" -DLUTILS_ANDROID_ADB_SOCKET="$ADB_SERVER_SOCKET" \
+            -DLUTILS_ANDROID_TEST_TIMEOUT=20 -DLUTILS_ANDROID_PUSH_TIMEOUT=60
+      - name: Build and run SIMD, images, mappings and installed consumer
+        run: |
+          set -euo pipefail
+          device_build="$RUNNER_TEMP/lutils-android-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cmake --build "$device_build" -j2
+          ctest --test-dir "$device_build" -R '^simd\.|^downstream\.android$' \
+            --output-on-failure --no-tests=error -j1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-simd-${{ github.run_id }}
+          path: ${{ runner.temp }}/lutils-android-${{ github.run_id }}-${{ github.run_attempt }}/Testing/Temporary
+      - name: Remove this run's build
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/lutils-android-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

@@ -44,7 +44,9 @@ void check(bool value) {
     if (!value)
         throw std::runtime_error("consumer result mismatch");
 }
+void verifySimdConsumer();
 int main() {
+    verifySimdConsumer();
 #ifdef __ANDROID__
     check(!co::DmaBufMemory::import(-1));
     check(!im::importAndroidImage(nullptr));

@@ -162,6 +162,10 @@ __attribute__((noinline, aligned(64))) std::uint64_t native(Data const &data) {
     }
     for (; i < data.size; ++i) {
         switch (op) {
+        case Operation::FixedAdd:
+        case Operation::FixedReverse:
+        case Operation::FixedRotate:
+            return 0;
         case Operation::Min:
             oi[i] = std::min(ai[i], bi[i]);
             break;
@@ -194,6 +198,10 @@ __attribute__((noinline, aligned(64))) std::uint64_t native(Data const &data) {
 __attribute__((noinline, aligned(64))) inline std::uint64_t nativeRun(Operation op,
                                                                       Data const &data) {
     switch (op) {
+    case Operation::FixedAdd:
+    case Operation::FixedReverse:
+    case Operation::FixedRotate:
+        return 0;
     case Operation::Min:
         return native<Operation::Min>(data);
     case Operation::Max:

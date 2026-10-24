@@ -1,5 +1,171 @@
 # SIMD 性能测试
 
+## 本轮实现与复测：过滤、NEON、固定宽度与资源回归
+
+本轮代码和正确性验证已补齐，性能目标尚未全部达成：部分过滤用例仍有退化，实际资源的校准成本也未明显下降。
+
+2026-10-24，以 `29857c1` 为基线，保持 C++17 和自主封装。两版使用相同基准程序、编译器及参数，
+PC 固定 i7-13700KF 的 CPU 2，Android 固定 SM8750P 的 CPU 7、NDK r28c；不改系统调频。
+每套五个 ABBA/BAAB 块，每版十个独立进程；每项预热 50 ms、九组样本。退化阈值仍为 5%，噪声阈值仍为 3%。
+下表耗时为进程中位数的中位数，变化取块配对比值；两种汇总方式不必完全同向。“通过”表示未触发退化门槛。
+
+### 实现与接口
+
+- 过滤复用一次紧凑掩码。通用压缩遍历命中位，NEON 复用计数并优化两 lane 写出；Scalar 和 x86 保留适合各自的循环分支。
+  精确写出、显式允许覆盖、原地过滤和尾部边界契约不变。
+- 新增 `load(p, batch)`，交织及写出使用引用传递，避免 NDK 把聚合返回值拆成逐 lane 搬运。
+  旧 `load<V>(p)` 保留；收益需要调用点采用新加载方式，不能推算为所有既有代码自动提速。
+- 完整原生输入的静态 shuffle/permute 使用编译器 builtin。任意宽度的 concat/extract/split 保留原通用实现；
+  五组汇编对照发现，全面改为引用或 memcpy 会让部分编译器产生更多栈访问，因此没有保留这些实验修改。
+- AVX2 UYVY→NV12 在三条输出流能同时对齐时先处理短前缀。调优候选两块未胜出后提前淘汰，仍需两阶段各五块、至少四胜才能切换。
+- 新增固定宽度基准、实际页内偏移和校准 outcome 记录。Linux CI 增加禁用 compiler-vector 的回退测试；Android 有独立设备 workflow，
+  下游安装测试覆盖固定宽度、重排、引用加载与 FMA 调度。
+
+`store`、`interleave`、`deinterleave` 和 `shuffle` 的显式函数指针类型有变化，普通调用语法保留。
+别名及短输出重排的测试见 [SIMD 接口](simd.md)。
+
+### 过滤与 NEON 封装开销
+
+262144 个元素，过滤为 50% 命中、默认精确写出；单位 µs/调用。
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC SSE2 / u8 | 592.961 | 128.408 | -78.4% | 通过 |
+| PC SSE2 / u16 | 636.130 | 206.641 | -67.5% | 通过 |
+| PC SSE2 / u32 | 664.000 | 299.063 | -55.1% | 通过 |
+| PC AVX2 / u16 | 69.232 | 69.411 | +0.2% | 通过 |
+| Android NEON / u8 | 236.953 | 218.281 | -6.9% | 通过 |
+| Android NEON / u64 | 855.013 | 704.258 | -17.3% | 通过 |
+
+NEON 交织与同 ISA 的独立 intrinsic 对照，同为 262144 元素、µs/调用：
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| Android NEON / 交织 / 库实现 | 79.418 | 59.482 | -25.1% | 通过 |
+| Android NEON / 交织 / 手写 intrinsic | 59.487 | 59.459 | -0.0% | 通过 |
+| Android NEON / 解交织 / 库实现 | 129.884 | 61.222 | -52.8% | 通过 |
+| Android NEON / 解交织 / 手写 intrinsic | 61.229 | 61.347 | -0.0% | 通过 |
+
+### 固定宽度
+
+新增 3/7/8/9/19/64 lane 矩阵，包含 4096、4099、262144 元素及非完整尾块。下表为大输入，单位 µs/调用。
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC AVX2 / 19 lane 加法 | 281.888 | 166.577 | -39.9% | 通过 |
+| PC AVX2 / 7 lane 拼接旋转 | 718.332 | 157.613 | -78.1% | 通过 |
+| PC AVX2 / 9 lane 拼接旋转 | 189.034 | 55.002 | -65.4% | 通过 |
+| Android Scalar / 3 lane 逆序 | 53.261 | 53.200 | +0.6% | 无法确定 |
+| Android NEON / 8 lane 拼接旋转 | 47.309 | 28.539 | -36.5% | 通过 |
+| Android NEON / 19 lane 拼接旋转 | 29.706 | 30.301 | +2.2% | 通过 |
+
+### 图像布局、调优和实际资源
+
+布局探针固定 1920×1536，输入页对齐，分别控制 Y/UV 页内偏移；单位 µs/调用。
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC AVX2 / Y+0、UV+0 | 152.085 | 163.485 | +3.7% | 无法确定 |
+| PC AVX2 / Y+16、UV+16 | 203.273 | 156.150 | -22.6% | 无法确定 |
+| PC AVX2 / Y+16、UV+32 | 193.846 | 193.343 | +3.1% | 无法确定 |
+
+三条输出流同偏移时可对齐；不同偏移保持原路径。布局结果波动超过既定标准时，不能凭中位数宣称稳定加速。
+
+资源表为 1920×1536、同一资源内存放平面、Automatic 的 executor_run，包含访问开始、计算和访问结束，单位 ms/帧。
+测量复用已分配 buffer，不包含分配、外部生产者或跨帧调度。
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| PC VA / UYVY→NV12 | 0.157 | 0.152 | -4.7% | 无法确定 |
+| PC VA / NV12→RGBA | 1.704 | 1.710 | +0.4% | 通过 |
+| Android VA / UYVY→NV12 | 0.169 | 0.167 | -0.8% | 通过 |
+| Android VA / NV12→RGBA | 1.307 | 1.307 | -0.0% | 通过 |
+| Android DMA / UYVY→NV12 | 0.270 | 0.265 | -4.1% | 通过 |
+| Android DMA / NV12→RGBA | 1.559 | 1.562 | +0.5% | 通过 |
+| Android AHB BLOB / UYVY→NV12 | 0.161 | 0.163 | +2.1% | 通过 |
+| Android AHB BLOB / NV12→RGBA | 1.311 | 1.311 | -0.0% | 通过 |
+| Android 原生 RGBA AHB / NV12→RGBA | 1.314 | 1.313 | -0.0% | 通过 |
+
+Automatic 在上述用例始终选择 PC AVX2、Android NEON。各 scope 独立计时，不能用 executor_run 减 mapped_run 精确反推映射成本。
+VA harness 的页对齐分配同时用于基线与候选，避免把分配布局变化误算为库优化。
+
+大图调优前后均保持默认后端，outcome 为 NoGain；一次校准成本没有实质下降。
+累计两块未胜出便淘汰；若前两块均未胜出，可在 8 次测量后结束，而非完成 20 次。本次资源用例多数在冷探测阶段已被拒绝。
+下表为一次校准的十进程中位数，单位 ms；没有将内部重复样本当成独立实验。
+
+| 资源 / 转换 | 优化前 | 优化后 |
+| --- | ---: | ---: |
+| PC VA / UYVY→NV12 | 5.752 | 5.768 |
+| PC VA / NV12→RGBA | 27.099 | 27.303 |
+| Android VA / UYVY→NV12 | 6.654 | 6.673 |
+| Android VA / NV12→RGBA | 34.637 | 34.659 |
+| Android DMA / UYVY→NV12 | 6.626 | 6.665 |
+| Android DMA / NV12→RGBA | 34.775 | 34.765 |
+| Android AHB BLOB / UYVY→NV12 | 6.648 | 6.640 |
+| Android AHB BLOB / NV12→RGBA | 34.622 | 34.605 |
+
+### 完整矩阵与未解决项
+
+| 套件 | 通过 | 退化 | 无法确定 |
+| --- | ---: | ---: | ---: |
+| [linux-filters](data/simd/finish/linux-filters.json) | 132 | 22 | 62 |
+| [linux-composition](data/simd/finish/linux-composition.json) | 74 | 0 | 46 |
+| [linux-fixed](data/simd/finish/linux-fixed.json) | 106 | 0 | 56 |
+| [linux-primitives](data/simd/finish/linux-primitives.json) | 186 | 3 | 36 |
+| [linux-va](data/simd/finish/linux-va.json) | 61 | 0 | 11 |
+| [linux-layout](data/simd/finish/linux-layout.json) | 9 | 0 | 9 |
+| [android-filters](data/simd/finish/android-filters.json) | 134 | 0 | 10 |
+| [android-composition](data/simd/finish/android-composition.json) | 69 | 0 | 3 |
+| [android-fixed](data/simd/finish/android-fixed.json) | 53 | 0 | 55 |
+| [android-primitives](data/simd/finish/android-primitives.json) | 99 | 0 | 69 |
+| [android-va](data/simd/finish/android-va.json) | 67 | 0 | 5 |
+| [android-dma](data/simd/finish/android-dma.json) | 45 | 0 | 27 |
+| [android-ahb](data/simd/finish/android-ahb.json) | 71 | 0 | 1 |
+| [android-ahb-rgba](data/simd/finish/android-ahb-rgba.json) | 36 | 0 | 0 |
+
+共 1557 项：1142 项通过、25 项确认退化、390 项无法确定。完整性能门禁未全绿，没有放宽阈值或删除失败项。
+
+变化幅度最大的确认退化如下（单位 µs/调用）；完整上下文、全部五块比值及噪声指标见各报告。
+
+| 路径 | 优化前 | 优化后 | 配对变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| linux-filters / scalar / copy_if_u16_overwrite / n=4096 / 100%命中 | 0.788 | 0.972 | +23.4% | 退化 |
+| linux-filters / sse2 / copy_if_u16_overwrite / n=4099 / 100%命中 | 0.270 | 0.332 | +23.2% | 退化 |
+| linux-filters / sse2 / copy_if_u16 / n=4099 / 100%命中 | 0.270 | 0.333 | +23.1% | 退化 |
+| linux-filters / scalar / copy_if_u16_overwrite / n=4099 / 100%命中 | 0.789 | 0.973 | +22.5% | 退化 |
+| linux-filters / sse2 / copy_if_u16_overwrite / n=4096 / 100%命中 | 0.271 | 0.330 | +22.1% | 退化 |
+| linux-filters / sse2 / copy_if_u16 / n=4096 / 100%命中 | 0.271 | 0.330 | +21.9% | 退化 |
+| linux-filters / sse2 / copy_if_u64_overwrite / n=4096 / 50%命中 | 1.512 | 1.842 | +21.8% | 退化 |
+| linux-filters / sse2 / copy_if_u64_overwrite / n=4099 / 50%命中 | 1.515 | 1.841 | +21.7% | 退化 |
+
+无法确定的用例也包含值得继续排查的变慢趋势。以下 Android NEON 短输入在五个块中都变慢，但波动超过既定标准，因此仍保留“无法确定”：
+
+| 路径 / 元素数 | 优化前（µs） | 优化后（µs） | 配对变化 |
+| --- | ---: | ---: | ---: |
+| 19 lane 拼接旋转 / 4096 | 0.358 | 0.455 | +31.4% |
+| 19 lane 拼接旋转 / 4099 | 0.381 | 0.441 | +17.0% |
+| i32→f32 / 4096 | 0.518 | 0.734 | +41.7% |
+| i32→f32 / 4099 | 0.528 | 0.746 | +38.0% |
+
+### 验证与证据
+
+Linux 全量 65 项通过、1 项因没有 DMA heap 跳过；Clang 18 ASan/UBSan/LeakSanitizer 与通用回退各 26 项通过。
+最终 NDK r28 C++17 构建通过，Android 真机 SIMD、图像、资源及安装 SDK 合计 25 项通过；回归工具 36 项通过。
+新增测试覆盖自加载/存储和部分重叠、1/2 lane 重排、全部输出对齐偏移、奇数高度与反向 stride，以及调优提前淘汰边界。
+
+Linux CI、Android 设备 CI 和下游接入代码已补齐，本次没有注册专用 runner 或启用远端任务。
+原始 JSONL、manifest、stderr、前后可执行文件、共同 harness、源码补丁、汇编探针及测试日志存于
+本地 `.local-artifacts/simd/finish.tar.gz`；Git 只保存紧凑报告。[汇总和归档 SHA-256](data/simd/finish/summary.json)。
+
+最终 SIMD 数据来自 linux-final 与 android-local 四套采集，资源来自完整的 VA、android-resources 三套与 linux-layout。
+中途因 ADB 超时、配置检查或诊断修改停止的采集均单独归档，没有参与最终统计。
+Android 25 项正确性测试分两次完成，其中七项上传失败后在无压缩模式下重试通过。长采样仍曾在结果回传时断连，不能确认压缩是根因。
+最终 Android SIMD 采集改为设备本地保存文件，上传和取回均使用 `-Z`；每套重新执行完整五块，不拼接旧采样。
+驱动保存实际设备时间、退出码和 boot ID，核对运行前后环境、上传文件及结果哈希，再使用原比较器验证。
+两版都使用相同本地保存模式；该模式减少了传输间隔，旧模式的中途数据仅供诊断。
+Linux 资源二进制与最终构建 hash 相同；Android 两个构建目录仅 debug 信息与 build-id 不同，剔除 build-id 字节后的全部加载段已逐字核对一致，
+保留采集时的真实 hash 和等价证据。Linux 布局探针也核对最终静态库 hash。
+
 ## 向量基础层、掩码组合与逻辑宽度
 
 2026-10-24，以 `be4b908` 为基线，保持 C++17、自主封装。新增 `composition` 基准：

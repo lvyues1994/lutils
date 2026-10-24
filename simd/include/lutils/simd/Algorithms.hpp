@@ -50,21 +50,42 @@ LUTILS_SIMD_INLINE std::size_t copyIf(T const *input, std::size_t n, T *output,
     assert(n == 0 || (input && output));
     std::size_t i = 0, written = 0;
     while (n - i >= V::size) {
-        auto values = load<V>(input + i);
-        if constexpr (Write == FilterWrite::AllowOverwrite && CompressNative<T, A>::available) {
-            auto selected = predicate(values);
-            if (sizeof(T) <= 2 && all(selected)) {
+        V values;
+        load(input + i, values);
+        auto selected = predicate(values);
+        // Keep these loops' count update in the writer. An outer empty-mask
+        // branch regressed short Scalar filters and x86 full/partial masks.
+        if constexpr (V::size == 1 || std::is_same_v<A, abi::sse2> ||
+                      (std::is_same_v<A, abi::avx2> && Write == FilterWrite::Exact)) {
+            written += compressStoreBits(output + written, values, MaskAccess::bits(selected));
+        } else if constexpr (std::is_same_v<A, abi::avx2> && Write == FilterWrite::AllowOverwrite) {
+            auto bits = MaskAccess::bits(selected);
+            if (sizeof(T) <= 2 && bits == validMaskBits<V::size>) {
                 store(output + written, values);
                 written += V::size;
-            } else if (any(selected)) {
-                auto packed = compress(values, selected);
-                // written <= i: the complete store stays inside n elements and
-                // cannot overwrite the next unread input block during in-place use.
+            } else if (bits) {
+                auto packed = compressBits(values, bits);
                 store(output + written, packed.values);
                 written += packed.count;
             }
-        } else
-            written += compressStore(output + written, values, predicate(values));
+        } else {
+            auto bits = MaskAccess::bits(selected);
+            if (bits) {
+                if constexpr (Write == FilterWrite::AllowOverwrite &&
+                              CompressNative<T, A>::available) {
+                    if (sizeof(T) <= 2 && bits == validMaskBits<V::size>) {
+                        store(output + written, values);
+                        written += V::size;
+                    } else {
+                        auto packed = compressBits(values, bits);
+                        // written <= i, including exact in-place filtering.
+                        store(output + written, packed.values);
+                        written += packed.count;
+                    }
+                } else
+                    written += compressStoreBits(output + written, values, bits);
+            }
+        }
         i += V::size;
     }
     if (i < n) {

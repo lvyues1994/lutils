@@ -38,6 +38,9 @@
 数量恰好匹配目标类型的原生宽度时使用原生 ABI，否则使用 fixed ABI，不保证保留原 ABI 标签。
 
 - `load<V>` / `store` 允许未按向量宽度对齐的地址；地址仍须满足元素 T 的对齐要求。
+- `load(p, value)` 直接写入已有 Batch，语义与 `value = load<V>(p)` 一致。
+  在 NDK r28 的 NEON 交织循环中，引用加载可避免聚合返回值被拆成逐 lane 搬运。
+  `store`、`interleave`、`deinterleave` 和 `shuffle` 接受 const 引用；加载、存储自身及部分重叠转移保留值语义。
 - `load_aligned` / `store_aligned` 另要求地址按 `V::alignment` 对齐。
 - `load_partial<V>(p, n, fill)` 只读取 n 个元素，其余填 fill；`store_partial` 只写 n 个。
   n 必须不超过 size。n 为零时允许空指针，不做指针运算或内存访问。
@@ -51,6 +54,21 @@
 
 本次 `Mask` 的大小和对齐已改变，`DispatchTable` 也因新增 `avx2Fma` 槽而改变大小。
 使用方须完整重新编译，包括创建和消费调度表的代码；不要持久化这些对象的字节或跨不同版本交换对象。
+引用版存储、交织和 `shuffle` 保持普通调用语法，但改变了显式函数指针类型；取地址的使用方需更新签名。
+
+NEON 热循环可使用以下加载方式；输入各有至少 V::size 个元素，输出有 2×V::size 个元素：
+
+```cpp
+using V = lutils::simd::Batch<float, lutils::simd::abi::neon>;
+V a, b;
+lutils::simd::load(inputA, a);
+lutils::simd::load(inputB, b);
+auto pair = lutils::simd::interleave(a, b);
+lutils::simd::store(output, pair.low);
+lutils::simd::store(output + V::size, pair.high);
+```
+
+旧的 `load<V>(p)` 仍可使用；新引用链的性能数据不代表未迁移调用点的收益。
 
 ### 带长度的内存接口
 
@@ -92,6 +110,7 @@ AVX2 的顺序跨越整个 256 位，不按两个 128 位半区分别排列。
 `shuffle<I...>` 显式指定全部输出索引；`rotate_left<N>` 在完整 Batch 内循环移动。
 `permute<M, Index>(a)` 或 `permute<M, Index>(a,b)` 用 constexpr 函数描述索引公式。
 索引在编译期固化并检查整数类型、非负和上界；双输入从 `[a,b]` 取值。
+完整原生输入、二次幂输出宽度的静态重排优先使用编译器 shuffle；不支持的宽度保留通用实现。
 `concat(a,b)` 拼接同底层 ABI 的向量；`extract<Offset,N>` 提取子段；`split<N>` 返回 low/high 两个非空部分。
 结果按逻辑元素数量选择原生或 fixed ABI，总元素数不超过 64。
 
@@ -192,6 +211,7 @@ auto result = tuned.value().plan.run(sourceView, destinationView);
 
 调优会反复写入目标，调用方须独占源与目标，源内容保持不变。先检查默认后端的预热稳定性，
 再用一次探测跳过明显较慢的候选。每个有希望的候选与默认后端交替执行 ABBA/BAAB 配对测量；
+候选在两个完整块中未胜出后立即停止采样，因为已不可能满足五块至少四胜的要求。
 胜出者还须通过独立的第二轮确认。两阶段各五个完整块，分别要求至少四次胜出，且
 `median(候选/默认) + 2*MAD <= 0.95`；MAD 是比值相对中位数的绝对偏差中位数。
 预热不稳定、采样不完整或确认失败均保留默认后端。此规则针对稳态中位吞吐，不判断尾延迟。
